@@ -1,0 +1,694 @@
+#!/usr/local/bin/perl  -w
+
+=head1 NAME
+
+timefetch -  Fetch a web page and time how long it takes
+
+=head1 SCRIPT CATEGORIES
+
+Web
+
+=head1 SYNOPSIS
+
+C<timefetch [abdfhjrstTvX] http://url [...]>
+
+C<timefetch -h   (for help message)>
+
+=head1 README
+
+This script uses LWP and Time::HiRes to fetch a web page,
+parse embedded IMG tags and other tags, download the images,
+and time the whole download operation.  It is useful for measuring
+download times for an entire page with images, and for reporting
+errors in downloads (timeouts, connect failures, broken images, etc.). 
+
+Complete documentation is available in the script iteself,
+in the embedded POD.
+
+=head1 DESCRIPTION
+
+This script uses LWP and Time::HiRes to fetch a web page,
+parse embedded IMG tags and other tags, download the images,
+and time the whole download operation.  It is useful for measuring
+download times for an entire page with images, and for reporting
+errors in downloads (timeouts, connect failures, broken images, etc.). 
+
+Depending on the command line options you use, it can just download
+a simgle HTML page or recursively download all embedded images and
+applets, and tally a grand total download time and total download size.
+
+This script does not implement a smart browser.   It basically does
+two kinds of "benchmarks":  best-case scenario and absolute worst-case
+scenario.  The best-case scenario is when a browser downloads just the
+contents of a single HTML page, and does not download any images,
+because they are in the cache.  The worst-case scenario is when
+the browser must download each and every image, one after the other.
+
+Neither one of these scenarios exactly matches real-live scenarios
+you experience with a browser.  However, these numbers are an objective
+measurement of a repeatible and well-defined process.  You can use
+them for straightforward comparison of the download times of
+two different web pages, or chart the download time of a single
+page during different kinds of loads and traffic patterns.
+
+While doing the downloading, the script checks for certain kinds
+of errors.  Depending on the exact command options, the program
+may abort with a brief message explaining the error and with an
+exit value of -1.  This makes the script useful as a monitor script
+for a web page.  
+
+The script can detect the following kinds of errors:  
+
+=over 4
+
+=item * 
+
+Download of the main web page times out. 
+
+=item * 
+
+The number of broken images exceeds a configurable number. 
+
+=item * 
+
+The main web page is not complete (e.g., it's missing "</html>"). 
+
+=item * 
+
+The total size of the web page including graphics is too small.
+
+=back
+
+It will also report any errors returned by LWP (connection refused,
+connection reset by peer, etc.).  You can use the "-X" option 
+to prevent the script from aborting on errors. 
+
+One extra feature in this script is the "force-host" feature.
+You can force this script to munge each URL before fetching it.
+This is useful in a situation where the URLs in your HTML pages all
+contain a load-balanced hostname, but you want to target a specific
+member host, or compare two member hosts. 
+
+This script is NOT a spider.  It will only fetch the inline images
+and applets contained in a single web page.  However, it will download
+component frames in a frameset down to arbitrary levels.
+
+=head1 EXAMPLES
+
+C<timefetch -rv http://www.domain.com>
+
+C<timefetch http://www.domain.com>
+
+C<timefetch http://www.domain.com/~john/page.html>
+
+=head1 CHANGES
+
+	Version 1.02
+
+	Fixed an incompatibility with version 3.xx of HTML::Parser. 
+	Added option -F to prevent downloading of frames. 
+	Added option -z to handle HTTP errors on the main page
+		differently from errors on other URLs.
+	There were several rather stupid bugs in versions 0.92 and 1.01,
+		these have been fixed. 
+
+
+=head1 PREREQUISITES
+
+This script requires C<LWP> and C<Time::HiRes>.  As written,
+it requires Perl 5.004, but in a pinch you could modify it
+to run on earlier versions of Perl 5.
+
+=head1 COPYRIGHT
+
+Copyright (c) 1998 John Nolan <jpnolan@sonic.net>. All rights reserved.
+This program is free software.  You may modify and/or distribute it 
+under the same terms as Perl itself.  This copyright notice 
+must remain attached to the file.
+
+=head1 REVISION
+
+$Id: timefetch,v 1.6 2000/01/08 19:27:23 john Exp john $
+
+=cut
+
+# ---------------------------------------------------------------------------
+
+$|++;       # Turn on autoflush
+use 5.004;  # We will use "for my"
+
+# ---------------------------------------------------------------------------
+# Load modules
+#
+use Time::HiRes;
+use HTTP::Request;
+use LWP::UserAgent;
+use HTML::LinkExtor;
+use URI::URL;   
+use Getopt::Std;
+use strict;
+
+# ---------------------------------------------------------------------------
+# Define global variables and objects up front
+#
+my ($Ua, $Pa, @Urls, $TotalTime, $TotalSize, $RealUrl, $ThisUrl);
+my ($Debug, $Recursively, $Verbose, $Java, $ForceHost, $Frames);
+my ($Status, $ErrorMsg, $BrokenImages, $MinBrokenImages, $Timeout, 
+    $Attempts, $MinimumSize, $HTMLtext, 
+    $NoExitOnErrors, $ExitOnMainPageError);
+
+# This variable will remember whether we had to recurse
+# in order to download frames.  It will contain a list of
+# the *types* of files which we downloaded additionally
+# (e.g., img, applet).
+#
+my $DidRecurse;
+
+# These will hold lists of urls, along with time and size data. 
+#
+my %Cache;
+my @SummaryCache;
+
+# This will hold a list of URLs which we want to download.
+# We will add to this list the original set of URLs on the command line,
+# as well as when we parse links to frames.
+# We remove from this list when we actually download the frames.
+#
+my %FramesToDownload = ();
+
+# Initialize a few global variables.
+#
+$BrokenImages = 0;
+$Status       = 0;
+
+
+# ---------------------------------------------------------------------------
+# Subroutines
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+#
+sub Usage {
+
+	return "Usage: $0 [dhFjrvXz] [-f host] [-a attempts] [-b broken_images]\n".
+		"\t[-s size] [-T text] [-t timeout]  http://url [http://url ... ]\n". 
+		"$0 -h   for help message\n";
+}
+
+
+# ---------------------------------------------------------------------------
+#
+sub PrintHelpMsg {
+
+	print Usage();
+
+	print <<EOM;
+
+ -a   Number of attempts for the initial page fetch. 
+ -b   Minimum number of broken images to trigger alarm. 
+ -d   Debug: view all kinds of marginally useful output. 
+ -f   Force host: before doing recursive downloads, munge each URL
+          and replace the host in the URL with some other host. 
+ -h   Help: print this help message. 
+ -j   Java: download java applets as well. 
+ -F   No frames: If the page is a frameset, do *not* fetch the frames.
+          Default is to fetch them.
+ -r   Recursive: download all images and calculate cumulative time. 
+ -s   Minimum size for the entire document (in kilobytes). 
+ -t   Timeout value for HTTP requests. 
+ -T   HTML text to scan for (such as "</html>").  Not case sensitive.
+ -v   Verbose: print out URLs as they are downloaded. 
+ -X   Don't exit on errors, just try to continue. 
+ -z   Exit immediately on errors in fetching the main page.
+
+	NOTE:  This program always downloads embedded frames and prints
+	a cumulative total for frames and framesets, even if you did not
+	specify a recursive download.   
+
+EOM
+	exit(0);
+}
+
+
+# ---------------------------------------------------------------------------
+#
+sub GetParams {
+
+	getopts('a:b:df:Fhjs:t:T:rvXz') or die Usage();
+	use vars qw( 
+		$opt_a $opt_b $opt_d $opt_f $opt_F $opt_h 
+		$opt_j $opt_r $opt_s $opt_t $opt_T $opt_v 
+		$opt_X $opt_z
+	);
+
+	$Attempts             = ($opt_a ? $opt_a :    3 );
+	$MinBrokenImages      = ($opt_b ? $opt_b :    3 );
+	$Debug                = ($opt_d ?     1  :    0 );
+	$ForceHost            = ($opt_f ? $opt_f : undef);
+	$Java                 = ($opt_j ?     1  :    0 );
+	$Frames               = ($opt_F ?     0  :    1 );
+	$Recursively          = ($opt_r ?     1  :    0 ); 
+	$MinimumSize          = ($opt_s ? $opt_s :    0 );
+	$HTMLtext             = ($opt_T ? $opt_T :   "" );  # e.g., "</html>"
+	$Timeout              = ($opt_t ? $opt_t :    7 );
+	$Verbose              = ($opt_v ?     1  :    0 );
+	$NoExitOnErrors       = ($opt_X ?     1  :    0 );
+	$ExitOnMainPageError  = ($opt_z ?     1  :    0 );
+
+	$Verbose = 1 if $Debug;
+
+	$MinimumSize *= 1024; # Convert kbyes to bytes
+
+	PrintHelpMsg() if $opt_h;
+
+	# If there are no URL's on the command line, bolt. 
+	#
+	die Usage() unless @ARGV;
+
+	print "Forcing host $ForceHost .\n" if ($Verbose and $ForceHost);
+
+	# Take URLs from the command line
+	#
+	return @ARGV;
+}
+
+
+
+# ---------------------------------------------------------------------------
+# Print routine for nicely-formatted output
+#
+sub PrintUrl {
+
+	my $url = (shift or 
+		die "Internal routine PrintUrl() expects parameter \$url ");
+
+	print sprintf ("%6.3f %5.1fkb: %s\n",
+		$Cache{$url}->{TIME},
+		$Cache{$url}->{SIZE}/1024,
+		$url);
+}
+
+# ---------------------------------------------------------------------------
+# Fetch a URL and time how long it takes
+#
+sub FetchUrl {
+
+	my $url = (shift or 
+		die "Internal routine FetchUrl() expects parameter \$url ");
+
+	print "Fetching: $url\n" if $Debug;
+
+	my $req = HTTP::Request->new (GET => $url);
+
+	# Temporarily turn off warnings.  The bowels of LWP are returning
+	# an obscure error here, which I don't know how to troubleshoot. 
+	#
+	$^W = 0;
+
+	my $start  = Time::HiRes::gettimeofday();
+	my $res    = $Ua->request($req);
+	my $finish = Time::HiRes::gettimeofday();
+
+	$^W = 1;   # Turn warnings back on again
+
+
+	# Calculate stats
+
+	my $size = length $res->content;
+	my $time = ($finish - $start);
+
+	return ($time,$size,$res);
+}
+
+
+# ---------------------------------------------------------------------------
+# Check the HTTP return status of a download, and return 0
+# if it is not 200.  If requested, also scan the fetched HTML
+# for the target string, and return 0 if we do not find it.
+# Otherwise return 1. 
+#
+sub CheckResponse {
+
+	# Get the response object as a parameter
+	#
+	my $res = (shift or
+		die "Internal routine CheckResponse() expects parameter \$res ");
+
+	my $check_html = (shift or "");
+	my $successful = 1;
+
+	$successful = 0 unless $res->code() == 200;
+
+	if ($check_html and $HTMLtext) {
+
+		$successful = 0 unless $res->content =~ m#$HTMLtext#i;
+	}
+
+	return $successful;
+}
+
+
+# ---------------------------------------------------------------------------
+# This routine aborts on any errors, printing out the error message....
+# unless the script was invoked with the -X option, in which case
+# it just prints the error message and returns. 
+#
+sub ErrorHandler {
+
+	$Status = -1;
+
+	# Get the response object as a parameter, along with 
+	# any error message. 
+	#
+	my $res = shift;
+	my $url = shift;
+	my $ErrorMsg = (shift or "");
+
+	unless ($ErrorMsg) {
+
+		$ErrorMsg = "Error ";
+
+		if ($res->code() != 200) {
+
+			$ErrorMsg .= $res->status_line . ": ". $res->request->url . " \n";
+		}
+
+		elsif ($res->content !~ m#$HTMLtext#i) {
+
+			$ErrorMsg .= "broken document from " . $res->request->url . " \n";
+		}
+	}
+
+	print $ErrorMsg; 
+
+	exit($Status) unless $NoExitOnErrors;
+}
+
+# ---------------------------------------------------------------------------
+# HandleParsedLink
+#
+# This is a callback provided for handling HTML links found during parsing.  
+# It is called once for each link found, with the $tag and %link
+# passed as parameters.  $tag is the HTML tag where the link was found.  
+# %links is a hash that contains the keyword/value pairs from the links 
+# that contain URLs.  
+#
+# For example, if an HTML anchor was found, the $tag would be "a" 
+# and %links would be (href=>"url").  We check each URL in %links.  
+#
+# For each URL, this function decides whether we want to download it.
+# It returns a list of URLs which need to be downloaded. 
+# This function *only* checks documents for URLs which might
+# need downloading.  
+#
+# Note that we are not EVER following hyperlinks like a spider.
+# We are only interested in images, applets and frames. 
+#  
+sub HandleParsedLink {
+
+	my ($tag, %links) = @_;
+	my ($time, $size, $res, $urlobj, $url);
+
+	# Flag for deciding whether we want to download a given URL
+	#
+	my $we_want_this_url = 0;
+
+	print "\$tag = $tag\n" if $Debug;
+
+	$we_want_this_url = 1 if $Recursively and $tag =~ /img/; 
+	$we_want_this_url = 1 if $Java        and $tag =~ /applet/; 
+	$we_want_this_url = 1 if $Frames      and $tag =~ /frame/; 
+
+	return unless $we_want_this_url;
+
+	# Examine the tag, and fetch its target if necessary. 
+	#
+	for my $key (keys %links) {
+
+		print "$tag: $key=$links{$key}\n" if $Debug;
+
+		# Get the absolute URL
+		#
+		$urlobj = URI::URL->new( $links{$key}, $ThisUrl );
+		$url    = $urlobj->abs;
+
+		# Force a particular host by munging the actual URL 
+		#
+		$url =~ s#http://[^/]+#http://$ForceHost# if $ForceHost;
+
+		# Remove any in-page anchor tags. 
+		#
+		$url =~ s/^([^#]*)#.*$/$1/;
+
+		# Process each URL that we have not seen before
+		#
+		unless (exists $Cache{$url}) {
+
+			# Keep a list each *type* of item 
+			# that we have recursively downloaded
+			#
+			$DidRecurse .= " $tag" unless $DidRecurse =~ /$tag/;
+
+			# If the tag is a frame, then don't download it here, 
+			# let the caller take care of downloading it.  Just add 
+			# the munged URL to the FramesToDownload hash and return.
+			#
+			if ($tag =~ /frame/) {
+
+				$FramesToDownload{$url} = 1;
+				return 1;
+			}
+
+			print "Examining url $url\n" if $Debug;
+
+			($time,$size,$res) = FetchUrl($url);
+
+			$BrokenImages++ unless CheckResponse($res);
+
+			ErrorHandler($res,$url) if ($BrokenImages >= $MinBrokenImages);
+
+			$TotalSize += $size;
+			$TotalTime += $time;
+
+			$Cache{$url} = { TIME => $time, SIZE => $size };
+
+			PrintUrl($url) if ($Verbose);
+		}
+	}
+
+	return 1; # Return a nice happy true value. 
+}
+
+# ---------------------------------------------------------------------------
+# Process each URL in the list. 
+#
+sub ExamineUrls {
+
+	foreach (@_) {
+
+		my $url = $_;
+
+		my ($size,$time,$res);
+
+		$TotalTime  = 0;
+		$TotalSize  = 0;
+		$RealUrl    = "";
+		$ThisUrl    = "";
+		$DidRecurse = ""; 
+
+		# Force a particular host by munging the actual URL 
+		#
+		if ($ForceHost) {
+
+			$url =~ s#http://[^/]+#http://$ForceHost#;
+		}
+
+		print "First fetch, for $url\n" if $Debug;
+
+		# We make two fetches, no matter what.  
+	
+		# First fetch.  This fetch will traverse redirects, so it is added
+		# to the total stats for the main url.  We only care about the total 
+		# if we are doing a recursive download. As a side effect, after traversing 
+		# redirects, we learn the true URL of the page ($RealUrl). 
+
+		ATTEMPT: while ($Attempts-- > 0) {
+
+			($time,$size,$res) = FetchUrl($url);  # Fetch the URL! 
+
+			if (CheckResponse($res, "check HTML content")) {
+
+				last ATTEMPT;
+			} else {
+
+				ErrorHandler($res,$url);
+				exit(-1) if $ExitOnMainPageError;
+			}
+		} 
+
+		if ($Recursively) {
+
+			$TotalSize += $size;
+			$TotalTime += $time;
+		}
+
+		# Now remember the URL we were redirected to.
+		# NOTE this call to base() must come before we invoke 
+		# the parse function.  Otherwise base() may croak. 
+		#
+		$RealUrl = $res->base(); 
+
+		# Analyze the HTML we got back, and extract links. 
+		# The handler HandleParsedLink will download each 
+		# linked image, if we are doing a recursive download. 
+		# It will also download framesets, and parse them recursively.  
+		#
+		# %FramesToDownload will hold a list of URLs which we want to download.
+		# We may add to this list when we parse links to frames.
+		# We remove from this list when we actually download the frames.
+		#
+		%FramesToDownload     = ();         # Empty the list
+
+		# This call to parse might add items to the FramesToDownload hash, 
+		# which would add iterations to the URL loop.
+		#
+		$ThisUrl = $RealUrl;
+		$Pa->parse($res->content); 
+
+		FRAME: while (scalar keys %FramesToDownload > 0) {
+
+			my ($url) = each %FramesToDownload;
+			delete $FramesToDownload{$url};
+
+			unless (exists $Cache{$url}) {
+
+				my ($time,$size,$res) = FetchUrl($url);
+
+				ErrorHandler($res,$url) 
+					unless CheckResponse($res, "check HTML content");
+
+				# Tally and store stats
+				#
+				$TotalSize += $size;
+				$TotalTime += $time;
+				$Cache{$url} = { TIME => $time, SIZE => $size };
+
+				$ThisUrl = $res->base();
+				$Pa->parse($res->content); 
+			}
+		}
+
+
+		# Second fetch.  This fetch does not involve any redirects, 
+		# because we are hitting the real URL directly. The data 
+		# is not tallied into the total for the main URL.  But we get 
+		# the data anyway, so we have it for just that URL alone.  
+		# We will need to report these values in every case. 
+		#
+		# Note that we will *not* parse the contents again.
+		#
+
+		# Force a particular host by munging the actual URL 
+		#
+		$RealUrl =~ s#http://[^/]+#http://$ForceHost# if $ForceHost;
+
+		print "Second fetch, for RealUrl $RealUrl\n" if ($Debug);
+
+		unless (exists $Cache{ $RealUrl }) {
+
+			($time,$size,$res) = FetchUrl( $RealUrl );
+
+			# Cache stats (but do not tally!)
+			#
+			## $TotalSize += $size;
+			## $TotalTime += $time;
+			$Cache{ $RealUrl } = { TIME => $time, SIZE => $size };
+		}
+
+		push @SummaryCache, $RealUrl;
+
+		if ($Recursively or $DidRecurse) {
+
+			# Store the whole recursive fetch with a special URL string. 
+			#
+			my $recursiveUrl =  "$url (incl.:$DidRecurse)";
+
+			$Cache{$recursiveUrl} = { TIME => $TotalTime, SIZE => $TotalSize };
+
+			push @SummaryCache, $recursiveUrl;
+
+			if ($TotalSize <= $MinimumSize) {
+
+				ErrorHandler($res,$url,
+					sprintf (
+						"Error: pagesize too small (%d kb) from %s\n",
+						$TotalSize/1024,$url
+					)
+				);
+			}
+
+
+		}  # end if ($Recursively or DidRecurse)
+
+	} # end URL
+
+} # end sub ExamineUrls()
+
+
+# ---------------------------------------------------------------------------
+#
+sub PrintFinalResults {
+
+	my $Separator = "----------------------------------------------------\n";
+
+	if ($Verbose or $Debug) {
+
+		print $Separator;
+
+	} else {
+
+		print "OK\n"    if $Status == 0;
+		print "Error\n" if $Status == -1;
+	}
+
+	for my $url (@SummaryCache) {
+
+			PrintUrl($url);
+	}
+}
+
+
+# ---------------------------------------------------------------------------
+# MAIN LOGIC
+# ---------------------------------------------------------------------------
+
+# Get the list of target URLs
+#
+@Urls = GetParams();
+
+# Set up a browser  
+#
+$Ua = LWP::UserAgent->new;
+$Ua->agent("Mozilla (compatible: LWP $LWP::VERSION)");
+$Ua->timeout($Timeout);
+
+# Set up a parser 
+#
+$Pa = HTML::LinkExtor->new (\&HandleParsedLink);
+
+# Fetch the URLs
+#
+ExamineUrls( @Urls );
+
+
+PrintFinalResults();
+
+
+exit($Status);
+
+# ---------------------------------------------------------------------------
+# END
+# ---------------------------------------------------------------------------
+
+1;

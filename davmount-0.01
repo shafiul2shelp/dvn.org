@@ -1,0 +1,171 @@
+#!/usr/bin/perl
+
+# vi: sw=4 ts=4
+
+use strict;
+use warnings;
+
+use XML::Parser;
+
+our $VERSION = 0.01;
+
+my $NAMESPACE = 'http://purl.org/NET/webdav/mount';
+
+my $url;
+my $open;
+
+my $parser = new XML::Parser(Handlers => {Start => \&handle_start,
+	End => \&handle_end,
+	Char => \&handle_char}, Namespaces => 1);
+
+$parser->parsefile(shift);
+$open = $open || '';
+
+my $client = shift || 'cadaver';
+
+exec $client, $url . $open;
+
+sub handle_start {
+	my ($parser, $name, $attrs) = @_;
+
+	if ($parser->namespace($name) ne $NAMESPACE) {
+		$parser->xpcarp("invalid davmount syntax");
+	}
+
+	if (defined $attrs) {
+		$parser->xpcarp("invalid davmount syntax");
+	}
+
+	my @context = $parser->context;
+	my $context = pop @context;
+
+	if (!defined $context) {
+		if ($name eq 'mount') {
+			return;
+		}
+
+		$parser->xpcarp("invalid davmount syntax");
+	}
+
+	if ($context eq 'mount') {
+		if ($name eq 'url' && !defined $url) {
+			$url = '';
+			return;
+		}
+
+		if ($name eq 'open' && !defined $open) {
+			$open = '';
+			return;
+		}
+		
+		if ($name eq 'user') {
+			return;
+		}
+
+		$parser->xpcarp("invalid davmount syntax");
+	}
+
+	$parser->xpcarp("invalid davmount syntax");
+}
+
+sub handle_end {
+	my ($parser, $name) = @_;
+
+	if ($parser->namespace($name) ne $NAMESPACE) {
+		$parser->xpcarp("invalid davmount syntax");
+	}
+
+	my @context = $parser->context;
+	my $context = pop @context;
+
+	if (!defined $context) {
+		if ($name eq 'mount') {
+			$parser->finish;
+			return;
+		}
+
+		$parser->xpcarp("invalid davmount syntax");
+	}
+
+	if ($context eq 'mount') {
+		if ($name eq 'url' && defined $url) {
+			return;
+		}
+
+		if ($name eq 'open' && defined $open) {
+			return;
+		}
+		
+		if ($name eq 'user') {
+			return;
+		}
+
+		$parser->xpcarp("invalid davmount syntax");
+	}
+
+	$parser->xpcarp("invalid davmount syntax");
+}
+
+sub handle_char {
+	my ($parser, $string) = @_;
+
+	my @context = $parser->context;
+	my $context = pop @context;
+
+	# Whitespace in <dm:mount></dm:mount> isn't invalid syntax
+	if ($context eq 'mount' && $string =~ /\s+/) {
+		return;
+	}
+
+	if ($context eq 'url') {
+		$url .= $string;
+		return;
+	}
+
+	if ($context eq 'open') {
+		$open .= $string;
+		return;
+	}
+
+	if ($context eq 'user') {
+		return;
+	}
+
+	$parser->xpcarp("invalid davmount syntax");
+}
+
+__END__
+
+=head1 NAME
+
+davmount -- parse davmount file & mount described WebDAV resource
+
+=head1 SYNOPSIS
+
+davmount file [client]
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<file>
+
+davmount file
+
+=item B<client>
+
+WebDAV client with which to mount described WebDAV resource.  Default: 'cadaver'
+
+=back
+
+=head1 PREREQUISITES
+
+XML::Parser
+
+=head1 SCRIPT CATEGORIES
+
+Web
+
+=head1 SEE ALSO
+
+L<http://greenbytes.de/tech/webdav/draft-reschke-webdav-mount-latest.html>

@@ -1,0 +1,132 @@
+{
+  "yt_dec": {
+    "s_112": "4:22\/2\/23:60\/0\/61:94",
+    "s_108": "93:18R\/1\/17:1R\/0\/18",
+    "s_106": "79\/89:79R\/90\/78:61R\/92\/60:35R\/3\/34:3R\/35",
+    "s_103": "90:71R\/93\/70:-1R",
+    "s_102": "8\/1:8\/0\/9:36\/93\/37:39\/92\/40:49\/36\/50:92\/39",
+    "s_118": "43\/89:43R\/90\/42:4R\/0\/3",
+    "s_113": "4:22\/2\/23:60\/0\/61:94",
+    "s_ver": 431,
+    "s_116": "92:57R\/0\/56:35R\/93\/34:30R\/2\/29:2R",
+    "s_111": "90:49R\/93\/48:-1R",
+    "s_115": "57\/92:57R\/93\/56:1R"
+  },
+  "yt": {
+    "diable_aud": false,
+    "disable_dec": false,
+    "ua": "Mozilla\/5.0 (Windows NT 10.0; WOW64; Trident\/7.0; rv:11.0) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/55.0.2883.95 Safari\/537.36"
+  },
+  "LastUpdated": 1581813053368,
+  "ad_smaato2": {
+    "ndid": 130190759,
+    "nvid": 130494661,
+    "niid": 130494657,
+    "nbid": 130494656,
+    "nlid": 130494658
+  },
+  "ad": {
+    "n_freq": 40,
+    "base_ad": "smaato,startapp",
+    "inter_interval": 9,
+    "i_freq": 9,
+    "video_freq": 40,
+    "v_freq": 10,
+    "pop_freq": 5,
+    "refresh": 40,
+    "inter_freq": 10,
+    "native_refresh": 45
+  },
+  "update": {
+    "pop": true,
+    "ver": "3.2.14",
+    "vc": 1159,
+    "force": false
+  },
+  "version": 3,
+  "pref_down_conn_wifi": "4",
+  "ad_priority_v": "smaato,",
+  "mc": {
+    "onestore_id": "0000704757",
+    "pkg": "com.fundevs.app.mediaconverter",
+    "min_ver_legacy": 27,
+    "pkg_legacy": "com.springwalk.mediaconverter",
+    "onestore_id_legacy": "0000650126",
+    "min_ver": 182
+  },
+  "gdpr": {
+    "subject": "0"
+  },
+  "stat": {
+    "ad": true
+  },
+  "pref_max_down": "4",
+  "yt_x2": {
+    "xpkg": -1,
+    "rx_hosts": "^.*(\\.g(oogle(?!usercontent)|static|gpht)|y(outu.?be(\\.|$)|timg)|doubleclick\\.|tubemate).*",
+    "rx_fastjs": ".*\/\/(m\\.youtube\\.com|.*\\.google\\.com).*",
+    "rx_ua": "( Build\/\\S*; wv|Version\/\\S* )"
+  },
+  "pref_KBps": false,
+  "pref_down_conn_mobile": "4",
+  "pref_down_cap": true,
+  "tracker": {
+    "mask": "C",
+    "first": false
+  },
+  "yt_p": {
+    "order2": "1,3,4,5",
+    "intercept_json": true,
+    "use_player_response": false
+  },
+  "cr": {
+    "send": true
+  },
+  "pref_include_dcim": false,
+  "pref_excv2": true,
+  "IABConsent_ParsedPurposeConsents": "111110000000000000000000",
+  "pref_speed_limit": "50",
+  "reportSent": true,
+  "from": "firebase",
+  "yt_x": {
+    "pkglist": "com.facebook.katana,com.google.android.gm,com.android.vending,com.android.settings,devian.tubemate.home,devian.tubemate.v3",
+    "nopbj": false,
+    "xpkg": false
+  },
+  "pref_ui_noti_sound": true,
+  "ad_priority_i": "ogury,smaato,mobfox",
+  "AndroidDeviceId": "18313f28-6701-4799-8336-d03897b52bf6",
+  "pref_down_cap_asr": true,
+  "IABConsent_CMPPresent": true,
+  "pref_folder": "\/storage\/7F77-744A\/Android\/media\/devian.tubemate.v3\/Video",
+  "js_instagram": "",
+  "pref_dark_theme": true,
+  "pref_https": true,
+  "host": "tubemate.net",
+  "w": {
+    "pup_blocked": "openload,hdo.to,streamango,estreame,retrogame24,sinbiro,marutv,kissasian,dasiview"
+  },
+  "pref_play_on_page": true,
+  "IABConsent_ParsedVendorConsents": "111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+  "parser": {
+    "video_rule": "video.m.rmcnmv.naver.com:,videofarm.daum:MobileVideo.action,mgoon:\/play\/video,:play.gom,licdn.com:\/playback",
+    "ignore_ad_rule": "\/tveta,daum_player_ad,smr.smartmediarep,fbcdn,video_ad,gogovid,taboola"
+  },
+  "ad_priority": "smaato,mobfox,",
+  "release_note": "- Fix parsing error for * marked videos\r<br\/>- Fix YouKu download\r<br\/>- Improved SoundCloud\/DailyMotion download<br\/>",
+  "pref_mc_mp3_shine": false,
+  "pref_down_fast": true,
+  "pref_mc_legacy": false,
+  "IABConsent_SubjectToGDPR": "1",
+  "pref_send_log": false,
+  "IABConsent_ConsentString": "BOPRRCROPRRCRABABAKOAf-AAAAVmABgACArIA",
+  "cast": {
+    "app_id": "4D9B9FEB"
+  },
+  "pref_player_internal": true,
+  "from2": "json.jsp",
+  "pref_down_wifi": true,
+  "js_ver": {
+    "instagram": 1
+  }
+}

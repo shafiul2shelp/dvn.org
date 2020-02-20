@@ -1,0 +1,1192 @@
+#!/usr/bin/perl -w
+#-------------------------------------------------------
+# HTTP Debugger
+#
+# Copyright (c) 1999 John Nolan. All rights reserved. 
+# This program is free software.  You may modify and/or 
+# distribute it under the same terms as Perl itself.  
+# This copyright notice must remain attached to the file.  
+#
+# You can run this file through either pod2man or pod2html 
+# to produce pretty documentation in manual or html file format 
+# (these utilities are part of the Perl 5 distribution).
+#-------------------------------------------------------
+
+
+=head1  NAME
+
+B<httpdebug> - A tool for debugging HTTP transactions
+
+=head1 SYNOPSIS
+
+   httpdebug [-p port] [-t timeout]
+
+=head1 README
+
+This is a tool to help you debug HTTP transactions.  It uses both 
+the HTTP server and HTTP client functionalities of the LWP bundle.  
+Using this script, you can easily and quickly mimic and tweak transactions 
+between servers and clients.  You operate this program using a Web browser. 
+
+=head1 DESCRIPTION
+
+When you launch this program from the command line, it becomes 
+a tiny HTTP daemon.  For example, if you launch this program with
+the parameter "-p 8080", then it will become a Web server 
+on port 8080.  You can then access it using a browser at the URL 
+"http://host.domain.com:8080/c".  The page that you will
+see is a control panel for the program.  
+
+With any other URL besides "/c" (and a few other paths),
+this little server will only print out a brief test page (i.e.,
+test headers and a test document). From the control panel, 
+you can specifically adjust the test headers and the test document 
+that the server (this program) sends to the client (something else), 
+and then watch how the client responds.  
+
+All transactions are logged, and you can view these 
+transaction logs right from the browser, by using
+the path "/l" or "/log". 
+
+You can use the debugger's HTTP client functionality to interact with 
+a remote web server.  From the control panel, you can specify a URL,
+and the debugger (as HTTP client) will send that request to a remote
+Web server and save the response headers and document. 
+If you want, you can manually adjust the header data and
+request lines that the HTTP client uses during this transaction.
+
+After fetching a document like this, the debugger's server functionality 
+can immediately use this information to mimic that remote server.  
+In this way, you can very easily simulate the interactions between 
+a remote server and a remote client, by just making your little server 
+behave exactly like the remote server.
+
+You can very carefully tweak the headers and document data 
+that you are sending and receiving.  This can be useful for 
+locating otherwise obscure errors. 
+
+The debugger has a built-in timeout, which by default is 180 seconds.
+This helps prevent you from launching the HTTP daemon and then
+forgetting that it's running, which could be a security issue. 
+When you launch the program from the command line, use the -t option
+to specify a timeout (in seconds).  The program will exit
+after that number of seconds of idle time. 
+
+=head1 The Log page
+
+The debugger has a log page, where it records the data transferred
+(both headers and data) during HTTP transactions. On the log page, 
+this is the color scheme:
+
+	Remote client: blue italics
+	Local server: black italics
+	Local client: black roman
+	Remote server: green roman
+
+Headers and data are all the same color.  They are separated
+by two newlines, of course. 
+
+The debugger does not log transactions made when it
+serves up the control panel, the log page, nor this help page.
+
+=head1 Special URLs
+
+Below is a list of all the URLs that are "special" for this 
+Web server:
+
+    Control panel: /c  /con /cons /console /control
+    Log page:      /l  /log
+    Help page:     /i  /info /h /help /q
+
+Any other URLs will result in the sending of the test page
+as a response. 
+
+=head1 Do I really need this thing?
+
+Maybe not.  You can do practically all of these things
+from the command line using netcat.  But it's a lot
+trickier that way, especially if you are not a die-hard
+command-line jockey.  This interface is certainly faster,
+and it keeps a nice handy log of all transactions. 
+Plus it has pretty colors.  
+
+=head1 SCRIPT CATEGORIES
+
+Web
+CGI
+
+=head1 PREREQUISITES
+
+You basically need the LWP bundle and CGI.pm. If your version of
+CGI.pm does not have the noDebug pragma, then consider downloading
+a later version of CGI.pm from CPAN. 
+
+=head1 AUTHOR 
+
+John Nolan  jpnolan@sonic.net  February 1999.  
+
+=cut
+
+
+#-------------------------------------------------------
+
+use CGI qw(:standard :noDebug);
+use HTTP::Daemon;
+use HTTP::Status;
+use HTTP::Request;
+use LWP::UserAgent;
+use Getopt::Std;
+use Sys::Hostname;
+
+use strict;
+
+use vars qw( $opt_p $opt_t $Progname $nontext $menubar );
+
+$|++;
+
+# NOTE: Near the end of this program is a BEGIN block
+# where some important variables are initialized. 
+# It's at the end of the program, rather than up here,
+# only because it's really long. 
+
+getopts('p:t:');
+
+
+#----------------------------------------------
+# Setup Global variables
+#
+my $PORT      = (defined $opt_p ? $opt_p :    0 );
+my $TIMEOUT   = (defined $opt_t ? $opt_t :  180 );
+
+# NOTE: hostname() does not return the FQDN, only the hostname.  
+# You may want to just hard-code your hostname here, instead.
+#
+my $HOST      = hostname();   
+chomp($HOST);
+
+my $req_counter = 1;
+my $res_counter = 1;
+
+my $d = new HTTP::Daemon (LocalAddr => $HOST);
+$d    = new HTTP::Daemon (LocalAddr => $HOST, LocalPort => $PORT) if $PORT;
+
+unless (defined $d) {
+	warn "Could not bind to port.  I'm going to have to exit.  Sorry.\n";
+	exit(-1);
+}
+
+my $url       = $d->url;
+
+my @helpinfo  = <DATA>;             # Read the info at end of code
+
+my $log       = "";                 # Where we store transaction logs
+my $delim     = ('-') x 60 . "\n";  # Delimiter for displaying logs
+my $agentname = "Mozilla (compatible: LWP $LWP::VERSION)";
+
+my %res_headers;               # Hash will hold response headers that we serve
+my %res_content;               # Hash will hold response content that we serve
+my %request;                   # Hash will hold request data that we send
+
+$res_headers{'current'} = ($res_headers{'HTML'} or "");
+$res_content{'current'} = ($res_content{'HTML'} or "<H1>Oops -- test no data!</H1>");
+
+$request{'current'} = "GET http://www.perl.org HTTP/1.1\nUser-Agent: $agentname\n\n";
+
+
+
+#----------------------------------------------
+# Escape HTML so we can display raw HTML in a web browser
+#
+sub escapeHTML {
+
+	my %ENTITIES = (
+
+		'&' => '&amp;',
+		'>' => '&gt;',
+		'<' => '&lt;',
+		'"' => '&quot;',
+	);
+
+	my $text = shift;
+	$text =~ s/([&\"><])/$ENTITIES{$1}/ge;
+	return $text;
+}
+
+#----------------------------------------------
+# Create a Web browser and fetch a URL, headers and all.
+# If necessary, construct custom request headers.
+#
+sub geturl {
+
+	my ($url,$request_data) = @_;
+	my ($ua,$req,$res);
+
+	$ua = new LWP::UserAgent;
+	$ua->agent($agentname);
+
+	# If there is any custom request data, then parse out
+	# header fields and values, and set them in the 
+	# request object.
+	#
+	if ($request_data) {
+
+		my @request_line = split /\n/, $request_data;
+
+		# Special handling for the actual GET/POST statement
+		#
+		my ($method,$url,$protocol) = split / +/, (shift @request_line), 3;
+
+		$req = HTTP::Request->new (GET => $url);
+		$req->method($method);
+		$req->protocol($protocol);
+
+		# Now parse out the other headers
+		while (defined ($_ = shift @request_line)) {
+
+			last unless /\S/;
+			my ($key,$value) = split /:\s+/, $_, 2;
+
+			# We need to handle the User-Agent header specifically,
+			# because it's a property of the LWP::UserAgent object,
+			# not the HTTP::Request object. 
+			#
+			if (lc($key) eq 'user-agent') {
+
+				$ua->agent($value);
+				next;
+
+			} else {
+
+				# This is where we set all the other headers.
+				$req->header($key => $value);
+			}
+		}
+
+		# We have read the last line of headers.  
+		# Now slurp in lines of content, if any,
+		# and insert them as the content of our request object.
+		#
+		my $content = join '', @request_line;
+		$req->content($content) if $content;
+
+	} else {
+
+		# If $request_data is empty, then just create 
+		# a plain-Jane request object, with the default headers.
+		#
+		$req = HTTP::Request->new (GET => $url);
+		$req->protocol('HTTP/1.1');
+	}
+
+	# Fetch the URL!
+	$res = $ua->request($req);
+
+	# Return the request and response as objects.
+	return ($req,$res);
+}
+
+
+
+#----------------------------------------------
+# Daemonize:  fork, and then detatch from the local shell.
+#
+defined(my $pid = fork) or die "Cannot fork: $!";
+
+if ($pid) {             # The parent exits
+	print redirect($url); 
+	exit 0;
+}
+
+close(STDOUT);          # The child lives on, but disconnects
+                        # from the local terminal
+
+# We opt not to close STDERR here, because we actually might
+# want to see error messages at the terminal. 
+
+
+
+#----------------------------------------------
+# MAIN LOGIC:  Basically a never-ending listen loop
+#
+LISTEN: {
+
+	alarm($TIMEOUT);              # (re-)set the deadman timer
+
+	my $c = $d->accept;           # $c is a connection
+	redo LISTEN unless defined $c;
+
+	my $r = $c->get_request;      # $r is a request
+	redo LISTEN unless defined $r;
+
+	$CGI::Q = new CGI $r->content;
+
+
+	#--------------------
+	# Log page
+	#
+	if ($r->url->epath =~ /(^\/+log$|^\/+l$)/) {
+
+		$c->send_basic_header;
+
+		print $c 
+			header,
+			start_html("$Progname Transaction Logt"),
+			h1("$Progname Transaction Log"),
+			$menubar,
+			hr,
+			pre($log)
+		;
+		close $c;
+		redo LISTEN;
+
+	#--------------------
+	# Help page
+	#
+	} elsif ($r->url->epath =~ /(help|info|^\/+i$|^\/+q$|^\/+h$)/) {
+
+		$c->send_basic_header;
+
+		print $c 
+			header,
+			start_html("$Progname Help Page"),
+			h1("$Progname Help Page"),
+			$menubar,
+			hr,
+			@helpinfo,
+			hr,
+			$menubar,
+			end_html
+		;
+		close $c;
+		redo LISTEN;
+    
+	#--------------------
+	# Console page
+	#
+	} elsif ($r->url->epath =~ /(control|console|^\/+cons?$|^\/+c$)/) {
+
+		if (param 'Shut down now') {
+
+			# Print a nice farewll message and then exit.
+			#
+			$c->send_basic_header;
+			print $c
+				header,
+				start_html("$Progname Shut Down"),
+				h1("$Progname Shut Down"),
+				"$Progname has been shut down.",
+			;
+			close $c;
+
+			exit(0);
+
+		} elsif (param 'Use sample') {
+
+			$res_headers{'current'} = $res_headers{param 'sample'};
+			$res_content{'current'} = $res_content{param 'sample'};
+
+		} elsif (param 'Use previous request') {
+
+			$request{'current'} = $request{param 'previous_request'};
+
+		} elsif (param 'apply') {
+
+			my ($headers,$content) =
+				split( /\n\s*\n/, param('response'), 2 );
+
+			$res_headers{'current'} = $headers . "\n";
+			$res_content{'current'} = $content unless $content eq $nontext;
+
+			my $response = "# " . $res_counter++;
+
+			$res_headers{$response} = $res_headers{'current'};
+			$res_content{$response} = $res_content{'current'};
+
+		} elsif (param('grab') or param('custom grab')) {
+
+			my $request_data = param('custom grab') ? param('request') : '';
+
+			my ($req,$res) = geturl( param('remoteurl'), $request_data );
+
+			if (param 'custom grab') {
+				my $req_url            = defined $req->url ? $req->url : "";
+				my $request_tag        = $req_counter++ . " - " .  $req_url ;
+				$request{$request_tag} = $r->as_string;
+			}
+
+			$log .= i( escapeHTML($req->as_string) ) . $delim;
+			$log .= font( 
+				{color=>"green"}, escapeHTML($res->as_string)
+			) . $delim;
+
+			# Separate headers from content.  This part can probably be
+			# cleaned up.
+			#
+			my ($headers,$content) =
+				split( /\n\s*\n/, $res->as_string, 2 );
+
+			$res_headers{'current'} = $headers . "\n";
+			$res_content{'current'} = $content;
+
+			my $req_url      = defined($req->url) ? $req->url : "";
+			my $response_tag = "# " . $res_counter++ . " - " . $req_url;
+
+			$res_headers{$response_tag} = $res_headers{'current'};
+			$res_content{$response_tag} = $res_content{'current'};
+
+			$request{'current'} = $req->as_string;
+		}
+
+		# Use the Content-Type header to figure out if the document body
+		# can be displayed in browser, or if we should insert a placeholder
+		# instead.  This is kludgy.  A later verion should clean up this part. 
+		#
+		my $document = $res_headers{'current'} . "\n" if $res_headers{'current'};
+
+		if (
+			$document =~ m/Content-Type:\s+/i 
+			and 
+			$document !~ m/Content-Type:\s+text/i
+		) {
+			$document .= $nontext;
+		} else {
+			$document .= $res_content{'current'} ;
+		}
+
+		$c->send_basic_header;
+
+		print $c
+			header,
+			start_html("$Progname Control Panel"),
+			h1("$Progname Control Panel"),
+			$menubar,
+			hr,
+			startform("POST", $url."control"),
+			p(b("Response Headers and Document Data:")),
+			p, textarea(
+				-name =>'response', 
+				-value=>$document,
+				-force=>1,
+				-rows=>12,
+				-cols=>75,
+				-wrap=>'physical'
+			),
+			p, "You can ",
+			submit("apply"), 
+			" these edits OR use a sample response: ", 
+
+			# Here, we dynamically create a popup menu whose items
+			# are the keys of the hash %response, except for the item 'current'.
+			# The keys of %response are set up as the actual sample responses
+			# at the end of this script.
+			#
+			submit('Use sample'),
+			popup_menu(
+				-name    => 'sample',
+				-value   => [ 
+					grep { $_ ne 'current'; } 
+						sort { lc($a) cmp lc($b); } keys %res_headers 
+				],
+				-default => 'HTML'
+			),
+
+			p,"OR you can grab response data from a remote web server, and use that as is:",
+			br, textfield( -name => "remoteurl", -size => 60, -value => 'http://' ), submit("grab"),
+			p(b("Request Data:")),
+			p,"Here you can customize the actual request you use to grab data: ", submit("custom grab"),
+			p, textarea(
+				-name =>'request', 
+				-value=>$request{'current'},
+				-force=>1,
+				-rows=>12,
+				-cols=>75,
+				-wrap=>'physical'
+			),
+			submit('Use previous request'),
+			popup_menu(
+				-name    => 'previous_request',
+				-value   => [ 
+					grep { $_ ne 'current'; } 
+						sort { lc($a) cmp lc($b); } keys %request 
+				],
+				-default => 'HTML'
+			),
+
+			p("This daemon will die after $TIMEOUT seconds of idle time.  ",
+				br,
+				submit('Shut down now')
+			),
+			endform,
+			hr,
+			$menubar,
+
+			# This is just for debugging
+			h3("Your contol panel request looked like this (you can debug the debugger!):"),
+			pre(font({-color=>'blue'},escapeHTML($r->as_string))),
+
+			end_html
+		;
+
+		close $c;
+		redo LISTEN;
+
+	#--------------------
+	# The actual Test Page
+	#
+	} else {
+
+		# Save the request headers, so that we can use them
+		# ourselves if we want to mimic the client
+		#
+		if (defined $r) {
+
+			# The variable $agent will be the hash-key which identifies
+			# clients which sent requests to this daemon.  It will appear 
+			# in the browser in a pull-down menu, from which the user 
+			# can select a previous set of request headers.
+			#
+			my $agent;
+
+			if (defined($r->user_agent) and $r->user_agent ne "") {
+
+				$agent = $r->user_agent ;
+			} else {
+				$agent = "Unknown";
+			}
+
+			$request{$agent} = $r->as_string;
+
+			# Munge request, to make sure we don't inadvertantly post
+			# a request back to ourselves
+			#
+			$request{$agent} =~ s#(GET|POST)\s+http://[^/]+(.*)\s+HTTP#$1 http://INSERT_URL$2 HTTP#;
+		}
+
+		# Send the document to the browser
+		#
+		print $c $res_headers{current},"\n",$res_content{current};
+		close $c;
+
+		# Log this transaction 
+		#
+		$log .= font(
+			{color=>"blue"},
+			i( escapeHTML($r->as_string) )
+		) . $delim;
+
+
+		# Use the Content-Type header to figure out if the document body
+		# can be displayed in browser, or if we should insert a placeholder
+		# instead.  This is kludgy.  A later verion should clean up this part. 
+		#
+		my $document = $res_headers{current} . "\n";
+
+		if (
+			$res_headers{current} =~ m/Content-Type:/i
+			and 
+			$res_headers{current} !~ m/Content-Type:\s+text/i
+		) {
+			$document .= $nontext . "\n"
+		} else {
+			$document .= $res_content{current} 
+		}
+
+		$log .= escapeHTML($document) . $delim;
+
+		redo LISTEN;
+	}
+}
+
+
+#----------------------------------------------
+# The sample test pages.
+# Put these into a begin block so that they will be 
+# defined before the rest of the code executes. 
+#
+BEGIN {
+
+$Progname = "HTTP Debugger";
+$nontext  = "[non-text data]";
+
+# The menubar, used on almost every page
+#
+$menubar = 
+	a({href=>'/info'},"Help") .
+	' - ' .
+	a({href=>'/control'},"Control Panel") .
+	' - ' .
+	a({href=>'/log'},"Log") .
+	' - ' .
+	a({href=>'/'},"Test")
+;
+
+
+#----------------------------------
+$res_headers{'HTML'} =<<EOM;
+HTTP/1.1 200 OK
+Date: Sat, 20 Feb 1999 16:59:12 GMT
+Server: libwww-perl-daemon
+Content-Type: text/html
+EOM
+
+$res_content{'HTML'} =<<EOM;
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML//EN">
+<HTML><HEAD><TITLE>$Progname</TITLE>
+</HEAD><BODY>
+<H2>Hello client! I'm an <b>HTML</b> file. </H2>
+<A HREF="/c">Control Panel</A></H2>
+</BODY></HTML>
+EOM
+
+#----------------------------------
+$res_headers{'HTML form'} =<<EOM;
+HTTP/1.1 200 OK
+Date: Sat, 20 Feb 1999 16:59:12 GMT
+Server: libwww-perl-daemon
+Content-Type: text/html
+EOM
+
+$res_content{'HTML form'} =<<EOM;
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML//EN">
+<HTML><HEAD><TITLE>$Progname</TITLE>
+</HEAD><BODY>
+<H1>$Progname - test HTML form</H1>
+$menubar
+<HR>
+<P>
+See the <A HREF="#note">NOTE</A>. 
+
+<H2>POST Form</H2>
+<FORM action="/form.cgi" METHOD="POST">
+
+Name:  <INPUT TYPE="text" NAME="name">
+<BR>
+Select Coffee: 
+<SELECT NAME="coffee type">
+<OPTION VALUE="regular coffee">regular coffee
+<OPTION VALUE="espresso">espresso
+<OPTION VALUE="latte">latte
+<OPTION VALUE="quakerstate">quaker state
+</SELECT>
+<BR>
+<INPUT TYPE=checkbox NAME=with VALUE=sugar>sugar
+<INPUT TYPE=checkbox NAME=with VALUE=milk>milk
+<INPUT TYPE=checkbox NAME=with VALUE=cocoa>cocoa
+<INPUT TYPE=checkbox NAME=with VALUE=cinnamon>cinnamon
+<BR>
+<INPUT TYPE=radio NAME=size VALUE=small>small
+<INPUT TYPE=radio NAME=size VALUE=medium>medium
+<INPUT TYPE=radio NAME=size VALUE=large>large
+<BR>
+<INPUT TYPE="submit" VALUE="Submit">
+
+</FORM>
+
+<H2>GET Form</H2>
+<FORM action="/form.cgi" METHOD="GET">
+
+Name:  <INPUT TYPE="text" NAME="name">
+<BR>
+Select Coffee: 
+<SELECT NAME="coffee type">
+<OPTION VALUE="regular coffee">regular coffee
+<OPTION VALUE="espresso">espresso
+<OPTION VALUE="latte">latte
+<OPTION VALUE="quakerstate">quaker state
+</SELECT>
+<BR>
+<INPUT TYPE=checkbox NAME=with VALUE=sugar>sugar
+<INPUT TYPE=checkbox NAME=with VALUE=milk>milk
+<INPUT TYPE=checkbox NAME=with VALUE=cocoa>cocoa
+<INPUT TYPE=checkbox NAME=with VALUE=cinnamon>cinnamon
+<BR>
+<INPUT TYPE=radio NAME=size VALUE=small>small
+<INPUT TYPE=radio NAME=size VALUE=medium>medium
+<INPUT TYPE=radio NAME=size VALUE=large>large
+<BR>
+<INPUT TYPE="submit" VALUE="Submit">
+</FORM> 
+
+<A NAME="note">
+<P>
+<B><I>NOTE:</I></B> Values here are not sticky.  This is not a comboform, it's just a plain
+old-fashioned HTML form with no fancy tricks from CGI.pm.  It's just here as a
+sample form so you get the idea of how this debugger lets you view HTTP transactions.
+</P>
+<P>
+<B><I>After submitting</I></B>, go to the <A HREF="/log">log page</A> to check the results. 
+Your request will appear in blue text.  
+</P>
+<HR>
+$menubar
+EOM
+
+$res_content{'HTML form'} .= 
+	"<PRE>" . ("\n") x 15 . "</PRE></BODY></HTML>\n\n";
+
+
+#----------------------------------
+$res_headers{'text'} =<<EOM;
+HTTP/1.1 200 OK
+Date: Sat, 20 Feb 1999 01:21:54 GMT
+Server: libwww-perl-daemon
+Content-Type: text/plain
+EOM
+
+$res_content{'text'} =<<EOM;
+Hello client!  I'm a text file.
+EOM
+
+#----------------------------------
+$res_headers{'302 Redirect'} =<<EOM;
+HTTP/1.1 302 Found
+Date: Sat, 18 Dec 1999 23:38:49 GMT
+Server: Apache/1.3.9 (Unix)
+Location: http://www.perl.org/
+Connection: close
+Content-Type: text/html
+EOM
+
+$res_content{'302 Redirect'} =<<EOM;
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<HTML><HEAD>
+<TITLE>302 Found</TITLE>
+</HEAD><BODY>
+<H1>Found</H1>
+The document has moved <A HREF="http://www.perl.org/">here</A>.<P>
+<HR>
+</BODY></HTML>
+EOM
+
+#----------------------------------
+$res_headers{'401 Unauthorized'} =<<EOM;
+HTTP/1.1 401 (Unauthorized) Authorization Required
+Connection: close
+Date: Sat, 18 Dec 1999 21:17:10 GMT
+Server: Apache/1.3.6 Ben-SSL/1.34 (Unix) mod_perl/1.19_01-dev
+WWW-Authenticate: Basic realm="PAUSE"
+Content-Type: text/html
+Client-Date: Sat, 18 Dec 1999 21:14:58 GMT
+Client-Peer: 212.40.160.59:80
+Title: 401 Authorization Required
+EOM
+
+$res_content{'401 Unauthorized'} =<<EOM;
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<HTML><HEAD>
+<TITLE>401 Authorization Required</TITLE>
+</HEAD><BODY>
+<H1>Authorization Required</H1>
+This server could not verify that you
+are authorized to access the document
+requested.  Either you supplied the wrong
+credentials (e.g., bad password), or your
+browser doesn't understand how to supply
+the credentials required.<P>
+</BODY></HTML>
+EOM
+
+#----------------------------------
+$res_headers{'403 Forbidden'} =<<EOM;
+HTTP/1.1 403 Forbidden
+Connection: close
+Date: Sat, 18 Dec 1999 19:59:25 GMT
+Server: Apache/1.2.4 mod_perl/1.07
+Content-Type: text/html
+Client-Date: Sat, 18 Dec 1999 20:49:39 GMT
+Client-Peer: 192.168.17.1:80
+Title: 403 Forbidden
+EOM
+
+$res_content{'403 Forbidden'} =<<EOM;
+<HTML><HEAD>
+<TITLE>403 Forbidden</TITLE>
+</HEAD><BODY>
+<H1>Forbidden</H1>
+You don't have permission to access /offlimits
+on this server.<P>
+</BODY></HTML>
+EOM
+
+
+#----------------------------------
+$res_headers{'404 Not Found'} =<<EOM;
+HTTP/1.0 404 Not Found
+Date: Sat, 20 Feb 1999 02:51:02 GMT
+Server: NCSA/1.5
+Content-Type: text/html
+Client-Date: Sat, 20 Nov 1999 02:49:07 GMT
+Client-Peer: 207.29.195.3:80
+Title: 404 Not Found
+EOM
+
+$res_content{'404 Not Found'} =<<EOM;
+<HEAD><TITLE>404 Not Found</TITLE></HEAD>
+<BODY><H1>404 Not Found</H1>
+The requested URL was not found on this server.
+</BODY>
+EOM
+
+#----------------------------------
+$res_headers{'500 Server Error'} =<<EOM;
+HTTP/1.0 500 (Internal Server Error) Server Error
+Date: Sat, 20 Feb 1999 02:44:04 GMT
+Server: NCSA/1.5
+Content-Type: text/html
+Client-Date: Sat, 20 Nov 1999 02:42:08 GMT
+Client-Peer: 207.29.195.3:80
+Title: 500 Server Error
+EOM
+
+$res_content{'500 Server Error'} =<<EOM;
+<HEAD><TITLE>500 Server Error</TITLE></HEAD>
+<BODY><H1>500 Server Error</H1>
+The server encountered an internal error or
+misconfiguration and was unable to complete 
+your request.<P>
+Please contact the server administrator, webmaster\@op.net and 
+inform them of the time the error occurred, and anything you might 
+have done that may have caused the error.<P>
+<b>Error:</b> HTTPd: malformed header from script /cgi-bin/myscript.cgi
+</BODY>
+EOM
+
+
+#----------------------------------
+my $gifdata =<<EOM;
+474946383961f9006c00c4ff00ffffffefefefdededecececeb5b5b59c9c
+9c9494947b7b7b6b6b6b6363634a4a4a4242423131312121211010100000
+000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000021f904010000ff002c0000
+0000f9006c000005ff20208e64699e68aaae6cebbe702ccf746ddf78aeef
+7cefffc0a010c068188fc8a4d2e8501c1004c1707a333c9658c782cafd3d
+bee0b0784c0e2b08ddf40a516e3bd43ac1602ea80702beb67e2f66e0e180
+00077c620d81345201080a4e06050302773d84947a0e7f875c8395573b01
+04050498390191030c07040d0b090a088e05a1a3389cb5638699546c9cb8
+3803070b0f0e0603b335040b0c0c0a0f0c0908090e0d0608077390c634b6
+db6152b94204d50707060e7bbd35020709450bae8fd931050d5f09040c08
+c5060a0c06060b514079eb51805009759cd07ce3424f0fba1692440c2040
+2d9481040952111095ee80916a1b1de121e004980304b126ff0ef0b169cf
+4012012a295c38a4619b87290a30000860220176cf0cc859a0651f829730
+5435833220c1826a8fca295b7051e800033377b4d48394443042f168eeb0
+5906e789010a1a28888ad2ca170300281e58fb64a38c000c9a2953c0ce48
+ab22addc853b108ac09c1e5bdb74f54a49ac10b264cc9620b0949c23c38a
+de9274c59781618e30e6292b42af8147be0e124ca4c64e01b1ab5973242e
+b39804a5048e8140bec5024103281b3143daecc0592a030c1c6c2c10f684
+2a7c0da4d173b26c1cb9033b9f391140c01a6242b56d1bcced63772116a9
+bc19162120d45cb5d6025c75b7e0008c00f49469f19d9a5f3fd6182583c0
+32c11510de0cb39171a0ff08098e611f793c98178664244cf4445d919422
+0734eff87380395780c64241603491576ad1a0d24a46a0b8e3cf6728f1d0
+a0180b8ad01884639dc34200ff94364e31dd15e3d35ccc6811dd022bb170
+4a182036e0cc024e6294c06b1675a7912335be3063372d4828467338c2e0
+e51714c234512c4e1186117300c8874c03182de24c922904a053894d2e82
+1123aee4234701e484e30e61066a055e0b5b82115b98348cd9490c02b013
+cb38a015a0c53aa81470860a02305388307b1a87512ad8446acf3eae8542
+270e897e91a500843cc8a80d8e9699c2007082128a29aeedb35303b12c3a
+42535fe063c08757f0e51a34a38244078f4c75870014606a7968ff0b84bc
+d1823a4580284c1370b950c7b8e4964bee090984b14078b5ce304013055c
+b42b1b1921b000510fb069829dd139e080aa2435b1885ad33ed1e76b90fc
+02dc3aaeac6a43ab0f64090021b6de5389ac29d85242ba65a0d0ae0c6c38
+119d6a0498b3cab150e6eb9c02e6487306610314b0c822f7c2e90f548f5c
+63213ebf308240b5885ecb02c52950b68d022a387ade087c9cf0310cb85e
+d10a3cf9b102a06725c8f7d5b4cbfcf248610ad4e7145fb1943d47140963
+24d72222d600b1c4449fc04d180578cc0bd37c6c51c2d32e04c0f16ff11a
+06a523eb8044184c03facbc02350c64b28777c4103683ed7189670c2ddd9
+230035f9b02af40ad99a40e2ffdc619ce06ddc9598c0770bef0a8355e12c
+f6444ebc32d73dc2e8d3cce191671bc941d83ec19d9df344e4fa641877ce
+def0b60b842050c2577afc5c47c97b9840d411793904c0e87c600cc0eae8
+7d514d758d4f841277eba4f207aed22c5ed700af70270a77666326bfe5eb
+c9a7927cc88752a8db9f4b01acf8e0bc1140af0c7a3341f554a0234e780f
+7c9cca0b3ef8e20867406e4a7271cdfa98910c621401128fe849a1d46115
+394cef6c7490821cf0b7919865c46131585ef8f83010a3b5218172d30303
+f5e0843e2c7004101460309c10b3d750033b4ec108cfd8838096bd8c679f
+28464f14523b399ce93329b4a24062469189a0428a349021e8c663a3ff1f
+a2604bb841c11eb2f705f1f0666f3a7a810092938f9fa0c157da51063b7e
+2691263e802acb8006da22d126500060731aa11d458687c5ab4022508699
+0b310048436cf1810178d3030c15a84335de6804360483ede0a8bd1714c4
+3305a04a4f80e28ff6a90d94c1180676500228034522111b294555308295
+945c310a2b3c2256e4a2ca3006f0049eda439242d93116b0b1999ce4c3a2
+c49082209ef101e3e059019ee18c7d3c40890a48923accb18c04948d2268
+b8c31cd4790d40b9022bf43b5b2fa3a0a929cd6e0e18919809c498313212
+b005dc53500e9b16cd07242d8e108986cf1c7791d45c444aaef1065abe70
+a957f0480189d090297615b3c2c0ffc243b020c76a6466943bf8639341ab
+e40ef9f087016a725b7b405a41db304af1e0d069086d81154e72156bacc3
+1fb098560825420f2d48611d9f68403aef500714eacc724f88054aac6420
+7562451978a0064a67e89295ee2181c96cc30b085a02324e4658a4bc4968
+ae308e4760070dd29a1696463088d488e22a94b387084a0189a6266c57ea
+94853ad6b20f03b0f314f6d95c3e80b6cf63b2277599eca425b9325368ce
+c09ace598520ad80d1436e8630a9d86b919802b38bcc0f0ffac3831cee00
+28d5f68429d070842374a629346cce156d7301c49c733a334e8cac2ce8ad
+832afbc646e59405c8708a3f8c100537e9c41e968b99a74c43916aac4285
+ff6dba4329d81309749ad0b958b4831613704b03a8653d31a418126a7153
+b794b24b6b24ae18646adcf7b28e284d60c6190c6311b595a23bee2c4eaa
+a2b10036a1d60ed7c8d01c1429246244a14d2aec6be73667b5dc7295748a
+314158cbf2024769cb8d6df05e0c306b82393e8011e6c8c794daf38af4ec
+4f53aca84e9c44c1d444d461b687ec2b28e019cfbdded2144791cf87ec11
+2318406c1b221681707963ae267fefb8bfd543923b0c6515e0e501f61246
+2a3a4711580c4714f7e087c004363f1396aa856d52899a2f078943de5248
+07c043ccecf513faea16c363c05a0a968c67b596750f537601890fa2d062
+01952380ea32fa3e810a966124c551d4ff502ee513af9570f11156d4f18f
+4b81074d0d0712a1d2a720fa8ce59af693d471037119020d5ffbae80afd3
+dd6377a4100e0f81d97c341b50743ce38f5b7ec240a058c7992e5398de11
+ef6cb76c851c86e98f60c4e7ce7c484271a81191b1a23ad5915d35adaaac
+02f81d89c0bdfbc4ef0aa592c140a3087931a750d8a3aa9c99f38abffc4c
+741fac8aa32c32d845222fb47d7b836b63bb8c52deb6ab77a48ab498c615
+aaeda840987a955070263a5826de21b1f28bbb7ec6c14292b7aa9a9ad56f
+ce019edb2489304c9d027ef6dbdfc005788805eee7fb44871ee460000ae9
+87661e590319d458855a7226ee395b7a25e1e8dd9f56334ffe59cc6a9506
+0600ffdc729494765507446bb2d4a73e2ef98681d52c18f409ac70846359
+460a1371731d02779169856d15c1e24e11d7a9bff658a388a0a0a04520d1
+50b5e07623afd85e3db64a0293dbe0991c0e42f7581e781994633affa0dd
+210b2924f865245ead884e2ad4e7a17bd6586616fa5a465c13d7b015e75e
+140fc74a90b313bed3d5b134e0731830297840133e327769931f9f02ac63
+b574b1785fcba4da87923623675a53e5088b43210eebbce22f26524b3282
+f50f5aab659217ceb00e76c16f1e0cbe065a47015a9cd44da0269cb51771
+8771fc05a5f8f0c858676be1ef5061146890231af929129ccec0d091fc11
+bd2bf0fb31cc9a07d7639fdbdb3211cc604ffff5b13ff22127e48462cda0
+1640622f2fc41d91801ccfe00efe5330fc901fd1201dcbe01e3227020501
+27a6c720a8370331a1525ee07ff5d57277510a05d10481e20f55852cc2f0
+24ad0006fb250092d37bcdc55fc9c10ac0e71410072c12341aa8e414dec0
+59f9147db4617d7c40723b707d295878c7007fd7f12331933da820276ad1
+104f612022d542c7537183e0048c3015d3110e46b00cc9405e24112e7191
+1a801282fa5703075406ac470376e14901f77f0317031a3280a3d159e9a2
+164a846e9dd10c53d20ac7520cf4231fb9735ea0e0808591004a4589ecf0
+4ddba354232000d1b16e4a28504c587dd68656507859001803e5e00ad903
+05bee124ff2d531c81e147dcd70f9576073ba61a01f00408d357d8f10070
+c10e1ee18b8ad081ec110caae17494c503aa070658574d6090467fb68751
+087b37a05a986131a536116452544fe114c94151d5c114be334c81533914
+d11069e4111ea11c01c0082fc106c4987f23480325288a2b105077986d64
+d08c07d58738906860f43745f04772751145152f05163c56243932f38d60
+d00049520ef86258ee3010edd80c593287364008373559a5138d2bc7872a
+28043b550d28736216e180a0c04bc1f60868b361d2e000b2625e345386fa
+26115fa00040a3911b294d304006d38482a6e88f3e4022cfd71ee61086ac
+f10ad2100ecb80159d3621f4709371f10a683008ff7082091f421540e35e
+7ac0589042084e283a64e084a52803d9f78f78521c7f5402a7c02745880f
+85422226430f35f50b6aa30a6a2151cae01d280028e3f00fcd631dc68756
+49f1492710004b068d2059066e38942319046ea1860de13d179117d3624e
+8c601a226034bbe624a360274d8424d19000a8e51bf61016a8564037c04c
+521611edd10633713d69c807d271041193025c879bd176045af00373a438
+5d989430411a6cb50ce5a4109e290d276602243155e952407e134ecd816a
+fcc83cd75602cb4809e1417ddcf0613c2000d24089ab108cab5232fe220c
+618311be783be9a90ced9935a8f01c4e9208db647ad6c90375c80d1da934
+26d858a4632bff34f02e4f422657f012c8a216a092736e780f1244899b34
+8888d8814337467d769d30b0619c7009388561e17164919903a7504e2092
+1aa34022ad600e2263582320814ec208d94022a83017497218168a678cc9
+03e5c00939da98dcb0551c433ac0b96b69c18c25b009ca379ef12808d390
+16ce900d9da25ce6653b84c4025477a5c5039688b008cc090674f4980284
+a557ca77fc23a653f703f8d10c35f305abd28eab504ee41967246005cb75
+62f1800c81340c7b352b7cdaa72e100c2fea2f601a66178812fec247a0e4
+82ccc09a2630a29788a17e1aa96122410ba893159281c921936ca01c6e09
+2703129f28801c2903a9925aaa8ec10cd9019a24008fffbf816ec9b1a43d
+415d98c929c9100c606aaab83a2b6c802425639a23e03727064e46a02a6e
+29939971ab47ca080f6098b9daac3401ac98645e6dbaa8bfd00fd2b0a724
+503206922ea6f721fe1282ce1aae802000c1e019c9b12a51ba1273f40ac8
+1a17d8043f0b002646c3a8e25aaf0b3188e6c5002f3100d83402ae905d5b
+0710bae389da570f5a6aaf080b04fc0a2cac70a27fb412b938960cf23b68
+6167276029c499b01a3bae6b520d9351043f231f61c12397d114648a1db6
+bab12a9b06f330074f9135c1c013557a16bf21110bd2295461512bbbb343
+100d73a005b31035eb5207b732257460a54fd18e88cab34cdb032c33116a
+610c03608cc570a7ffcb06ae7e639a19d1b45ccb036ce008d38002997106
+311a4e0fa65beec3ac30e0759d233ae2d0ae67210e4d170383f104a6540d
+452647722bb128100ef47a48c537051fa80ce171acd5b657fd90872e4019
+59f99334126562202b414a4d2aa0a15fe03d64b012010506d549067a4306
+7d57061caa8fb929067ac3af79f65b3f401994f8b7fb042cfb144e60242e
+c1c0b70305062ed5a5cf08b910f791cea92e750a06aad646968bbbce2106
+cd26bca0ab72d3801c61008da00bbade792c936b503e700ffb00ae4d04b1
+72a61a6d1643103903018531dcb309a3a02ebf2bbc204996399993a044b9
+d9ca2536254aebfb3cf44b02a3434e4bc7b9ea1bba6d5494ffbf01b75943
+89a8958bc4206a7b7511e00aa05f40721b76bb05a587d67b7abe0b62a626
+bf8d8931150c6247fabc23c00600e0293d1ac2ffdb037a62bb24c08969a4
+12042b478082c022d8bf301106c2c2462089562d81315bb118eec5a8c994
+8f336ca431bcaca786435b613a6f711625ec098fb7c038292b361a03f0d3
+c2d692c410dca113ac725ee5bf4b1cc4fd1a595b757591b5c5148c89aa43
+26698017ea838ad8f40707db99e6f4c6a3c6a67a2819364102413ac2605c
+c6edea52b2c23d2a407d0f82bac210c8c63bc4c8ea2d02ba03aa00959062
+0ecba42f2f306bc6e42a756c374b6c13acc646d0d81228e5c71ffc902ae0
+5e0f12a402dc12acd912ffd9e09dcda0b639c00ef8272ece6b6fec0a968a
+40aa5c5c1ba28cc520c677eef5612d511ba0ac6460e0babf2ac4de223d4d
+f60960e086c12cc1abe7caf4880a33bbb8482215c00258e28270959c9b03
+65c7328cc127d012bdf0cc2730cc4f76b99c22c4fe3906651c1e7a80c232
+5032cd45b7bff11327d61e19b2b85322c773eccdd104ce4b2cce0c5cce87
+5c62429cce5f8c02c36c13b789054c9040e68c02fb09061d6903787114b3
+6ba5b4d40472b0137e92258a600f1b5dc5001d8d029dc561d01c2d01cc07
+7d1009ed2dac36ccde22cf1d6cc92b808dc8bb03e60576d5f20bd4f04781
+d326e4640d59120eb423c7138dd2989cc53661cc22904cf4b5d4ff299cd0
+3661b15923c4522d0354ad02d4532271e08925bd2fe5fa0a06c7474964ac
+3b9233ffc3d52fed46298dc7bb7b6a443cc4c29cd05ea902392c02799d5e
+386d4a1b5c03f0e30dd512a5f6a24edc8c9e26aa241a9d71c1f10972b655
+5d0d7071bd8981cdc1efccd0090db92a003db272d9f2f8d7739a77e822c3
+35707ecc71b802347344bb57d8e1c82b8048ae310e45920aed9917b531d9
+5156d99175a73698cb9aadce9125b1621cd5bf3dca593cd9a6dda2cb3d03
+4192686f0ca512530a94080c6810be942114c190db6f9d49bcbd57607dc5
+997dce9b4dc859ac6a1adcdcef5bc293dd1028f0371d0105a1250836cd03
+53db193b71dd40a71caed000ffb5e15ea7f6dd43dc91040de0a706a607c4
+49a38331a1e484414a27067ec65decaea2bdb64d541c32578e70d010c521
+0df68135db5410c80043ddf290f40017b0e22413f29b00703dab772465dc
+c6f043c306149326cee2bb59224630c162f03333de469b4de1c50c246125
+0557d0bb47cee222400f5f611a9f10a417ed024dc44d37171d4eac03b9b8
+0e6ab1449a586b0f700a30d406b861deee0cb9cbbb57aae7a3945bbdf0fb
+cf629046416edc624eba15fc16f518b9187d714c350efe8c03bad4b684a4
+5dfb7ccee602467de564622775279038e042e8679a6652074332e32f619b
+4981062831e90a4871e888ce1e6034e98ddeb5a27e725836eaa68eab41f5
+78e5a7beeab9508f7dceeab03e16863ce1b15eeb5440228619e7b6beeb40
+70c427003dbc1eec5380e7eb4debc27eec3bc0e6658eecccfe03bdb87a4b
+4b1e2100003b
+EOM
+
+
+# We pack this data into a GIF image, and use it below
+#
+$gifdata =~ s/\n//gm;
+my $gif       = pack "H*",$gifdata;
+my $giflength = length $gif;
+
+
+$res_content{'GIF'} = $gif;
+$res_headers{'GIF'} =<<EOM;
+HTTP/1.1 200 OK
+Connection: close
+Date: Sat, 18 Dec 1999 16:47:56 GMT
+Accept-Ranges: bytes
+Server: Apache/1.2.4 mod_perl/1.07
+Content-Length: $giflength
+Content-Type: image/gif
+ETag: "142bc-14c4-385bba51"
+Last-Modified: Sat, 18 Dec 1999 16:46:09 GMT
+Client-Date: Sat, 18 Dec 1999 17:38:08 GMT
+Client-Peer: 192.168.17.1:80
+EOM
+
+}
+
+
+#----------------------------------------------
+__END__
+
+<H2>What is this thing?</H2>
+
+<p>
+This is a tool to help you debug HTTP transactions.  It uses both 
+the HTTP server and HTTP client functionalities of the LWP bundle.  
+It helps you easily mimic and tweak transactions between servers and clients.  
+You operate this program using a Web browser. 
+</p>
+
+<p>
+When you launch this program from the command line, it becomes 
+a tiny HTTP daemon.  For example, if you launch this program with
+the parameter "-p 8080", then it will become a Web server 
+on port 8080.  You can then access it using a browser at the URL 
+"http://host.domain.com:8080/c".  The page that you will
+see is a control panel for the program.  
+</p>
+
+<p>
+With any other URL besides "/c" (and a few other paths),
+this little server will only print out a brief test page (i.e.,
+test headers and a test document). From the control panel, 
+you can specifically adjust the test headers and the test document 
+that the server (this program) sends to the client (something else), 
+and then watch how the client responds.  
+</p>
+
+<p>
+All transactions are logged, and you can view these 
+transaction logs right from the browser, by using
+the path "/l" or "/log". 
+</p>
+
+<p>
+You can use the debugger's HTTP client functionality to interact with 
+a remote web server.  From the control panel, you can specify a URL,
+and the debugger (as HTTP client) will that request to a remote
+Web server and save the response headers and document. 
+If you want, you can manually adjust the header data and
+request lines that the HTTP client uses during this transaction.
+</p>
+
+<p>
+After fetching a document like this, the debugger's server functionality 
+can immediately use this information to mimic that remote server.  
+In this way, you can very easily simulate the interactions between 
+a remote server and a remote client, by just making your little server 
+behave exactly like the remote server.
+</p>
+ 
+<p>
+You can very carefully tweak the headers and document data 
+that you are sending and receiving.  This can be useful for 
+locating otherwise obscure errors. 
+</p>
+
+<p>
+The debugger has a built-in timeout, which by default is 180 seconds.
+This helps prevent you from launching the HTTP daemon and then
+forgetting that it's running, which could be a security issue. 
+When you launch the program from the command line, use the -t option
+to specify a timeout (in seconds).  The program will exit
+after that number of seconds of idle time. 
+</p>
+
+
+<H2>The Log page</H2>
+
+<p>
+The debugger has a log page, where it records the data transferred
+(both headers and data) during HTTP transactions. On the log page, 
+this is the color scheme:
+</p>
+
+<p align=center>
+<tt>
+	<font color=blue><i>Remote client</i></font> 
+	&lt;-&gt;
+	Local server 
+	<br>
+	<i>Local client</i> 
+	&lt;-&gt;
+	<font color=green>Remote server</font> 
+</tt>
+</p>
+<p>
+Headers and data are all the same color.  They are separated
+by two newlines, of course. 
+</p>
+
+<p>
+The debugger does not log transactions made when it
+serves up the control panel, the log page, nor this help page.
+</p>
+
+<H2>Special URLs</H2>
+
+Below is a list of all the URLs that are "special" for this 
+Web server:
+
+<PRE>
+Control panel: /c  /con /cons /console /control
+Log page:      /l  /log
+Help page:     /i  /info /h /help /q
+</PRE>
+
+Any other URLs will result in the sending of the test page
+as a response. 
+
+<H2>Do I really need this thing?</H2>
+
+<p>
+Maybe not.  You can do practically all of these things
+from the command line using netcat.  But it's a lot
+trickier that way, especially if you are not a die-hard
+command-line jockey.  This interface is certainly faster,
+and it keeps a nice handy log of all transactions. 
+Plus it has pretty colors.  :-)
+</p>
+
+<H2>Complaints, suggestions, improvements</H2>
+
+<p>
+Please send mail to the author at 
+<a href=mailto:jpnolan@sonic.net>jpnolan@sonic.net</a>. 
+</p>
+

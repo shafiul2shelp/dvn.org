@@ -1,0 +1,233 @@
+#!/usr/bin/perl
+# http://www.cs.dal.ca/~vlado/srcperl/report-new.pl
+# Copyright 2000-7 Vlado Keselj www.cs.dal.ca/~vlado
+
+sub help { print STDERR <<"#EOT" }
+# Report new material on a web page, version $VERSION
+#
+# The program normally runs as a cron job, so the result is sent as an
+# e-mail if it something changes.  It is convenient for keeping a
+# watch on interesting web pages.  It uses diff, lynx or wget,
+# sendmail (if option -e is used)
+#
+# Usage: report-new.pl [switches] URL
+#  -h    Print help and exit.
+#  -v    Print version of the program and exit.
+#  -e email Sends output, if not empty, to email.
+#  -D dir  Working directory.  By default, ${HOME}/agn is used if
+#        exists, otherwise the current directory.
+#  -d method Dumping method.  The default is lynx_txt; the other
+#        option is wget.
+#  -g    Debugging mode.  The new file is not fetched, but the program
+#        reruns on the last two different versions of the page.
+#  -p procf  Input processor.  There is supposed to be a file named
+#        procf that can be 'require'-ed, in Perl sense, which defines
+#        a subroutine named procf, which is used to filter the file
+#        before making diff.  The escape string '!KEEP: ' can be left
+#        at the beginning of the lines which we want to appear in diff
+#        whenever there is a difference.
+# More documentation included close to the end of the source file.
+#EOT
+
+use strict vars;
+use POSIX qw(strftime);
+use Carp;
+
+use vars qw( $VERSION );
+$VERSION = sprintf "%d.%d", q$Revision: 1.16 $ =~ /(\d+)/g;
+
+use Getopt::Std;
+use vars qw($opt_v $opt_h $opt_e $opt_d $opt_D $opt_p $opt_g);
+getopts("hve:D:d:p:g");
+
+if ($opt_v) { print "$VERSION\n"; exit; }
+elsif ($opt_h || !@ARGV) { &help(); exit; }
+
+my $dump = \&dump_lynx_txt;
+if ($opt_d ne '') {
+    if   ($opt_d eq 'lynx_txt') { $dump = \&dump_lynx_txt }
+    elsif($opt_d eq 'wget'    ) { $dump = \&dump_wget     }
+    else { &help(); print STDERR "error: '-d $opt_d'"; exit -1; }
+}
+
+if ($opt_D eq '') {
+    if (-d $ENV{HOME}."/agn") { $opt_D = $ENV{HOME}."/agn" }
+    else { $opt_D = '.' }
+} elsif (! -d $opt_D ) { die "directory \"$opt_D\" does not exist" }
+
+($#ARGV==0 && $ARGV[0]=~/^http:\/\//) ||
+    die "Format: report-new.pl http://...\n";
+
+my ($urlbase, $url);
+$urlbase = $url = shift;   # E.g.: http://www.cs.dal.ca/~vlado/srcperl
+if ( $url =~ m.//[^/]*/. )
+{ $urlbase = $`.$& }	   # E.g.: http://www.cs.dal.ca/
+
+my $urlId = &encode_w1($url);
+my $timestamp = strftime("%Y-%m-%d-%T", localtime(time));
+
+if (! -d "$opt_D/tmp")
+{ mkdir "$opt_D/tmp", 0700 or die "can't mkdir $opt_D/tmp: $!" }
+if (! -d "$opt_D/report-new.pl.d")
+{ mkdir "$opt_D/report-new.pl.d", 0700 or die "can't mkdir $opt_D/report-new.pl.d: $!" }
+chdir $opt_D;
+
+my $TmpBase   = "$opt_D/tmp/$urlId-$timestamp";
+my $TmpFile1  = "$TmpBase-1";
+my $TmpFile2  = "$TmpBase-2";
+my $lastFile  = "$opt_D/report-new.pl.d/$urlId.last";
+-e $lastFile or putfile($lastFile,'');
+my $lastFile1 = "$opt_D/report-new.pl.d/$urlId.last-1";
+-e $lastFile1 or putfile($lastFile1,'');
+
+# First step: fetch the page, unless option -g is given
+if (! $opt_g ) {
+    &$dump($url, $TmpFile1);
+    my $f1 = getfile($lastFile);
+    my $f2 = getfile($TmpFile1);
+    if ($f1 eq $f2) { rename($TmpFile1, $lastFile); &_exit(0); }  # nothing changed, exit
+    rename($lastFile, $lastFile1);
+    rename($TmpFile1, $lastFile);
+}
+
+my $material  = getfile($lastFile);
+my $material1 = getfile($lastFile1);
+if ($opt_p) {
+    require $opt_p;
+    $material  = &$opt_p($material);
+    $material1 = &$opt_p($material1);
+}
+putfile($TmpFile1, $material);
+putfile($TmpFile2, $material1);
+my $diffres = `diff $TmpFile1 $TmpFile2 2>&1`;
+$diffres =~ s/^[^<].*\n//mg;
+$diffres =~ s/^< //mg;
+
+if ($diffres ne '') {
+
+    if ($opt_p && index($material, '!KEEP: ') > -1) {
+	$material =~ s/^!KEEP: //mg;
+	putfile($TmpFile1, $material);
+	$diffres = `diff $TmpFile1 $TmpFile2 2>&1`;
+	$diffres =~ s/^[^<].*\n//mg;
+	$diffres =~ s/^< //mg;
+    }
+
+    if ($opt_e) {
+        my $out;
+        open($out, "|sendmail -t") or die;
+	print $out "To: $opt_e\n".
+	     "Subject: [report-new.pl] $url\n\n$diffres";
+	close($out);
+    }
+    else { print $diffres }
+}
+
+&_exit(0);
+
+sub _exit {
+    my $r = shift;
+    unlink $TmpFile1 if -e $TmpFile1;
+    unlink $TmpFile2 if -e $TmpFile2;
+    exit $r;
+}
+
+sub putfile($@) {
+    my $f = shift;
+    local *F;
+    open(F, ">$f") or die "putfile:cannot open $f:$!";
+    print F '' unless @_;
+    while (@_) { print F shift(@_) }
+    close(F)
+}
+
+sub encode_w1( $ ) {
+    local $_ = shift;
+    s/[\W_]/'_'.uc unpack("H2",$&)/ge;
+    return $_;
+}
+
+sub dump_lynx_txt {
+    my $url = shift;
+    my $file = shift;
+    local *F;
+    open(F,"|lynx -dump -nolist - > \Q$file") or die "lynx error:$!";
+    print F $url;
+    close(F);
+}
+
+sub dump_wget {
+    my $url = shift;
+    my $file = shift;
+    system('wget', '--quiet', '-O', $file, $url);
+}
+
+sub getfile($) {
+    my $f = shift;
+    local *F;
+    open(F, "<$f") or croak "getfile:cannot open $f:$!";
+    my @r = <F>;
+    close(F);
+    return wantarray ? @r : join ('', @r);
+}
+
+__END__
+=head1 NAME
+
+report-new.pl - Report new material on a web page
+
+=head1 SYNOPIS
+
+  report-new.pl [switches] URL
+
+=head1 DESCRIPTION
+
+Reports new material on a web page.  Typically used as a cron job.
+
+  -h    Print help and exit.
+  -v    Print version of the program and exit.
+  -e email Sends output, if not empty, to email.
+  -D dir  Working directory.  By default, ${HOME}/agn is used if
+        exists, otherwise the current directory.
+  -d method Dumping method.  The default is lynx_txt; the other
+        option is wget.
+  -p procf  Input processor.  There is supposed to be a file named
+        procf that can be 'require'-ed, which defines a subroutine
+        named procf, which is used to filter the file before making
+        diff.  The escape string '!KEEP: ' can be left at the
+        beginning of the lines which we want to appear in diff
+        whenever there is a difference.
+
+=head1 PREREQUISITES
+
+POSIX qw(strftime);
+uses diff, lynx or wget, sendmail (if option -e is used).
+
+=head1 SCRIPT CATEGORIES
+
+Web
+
+=head1 README
+
+Reports new material on a web page.
+
+=head1 SEE ALSO
+
+Scripts:
+wget
+
+=head1 THANKS
+
+I would like to thank Peet Moris for bug reports and comments.
+
+=head1 COPYRIGHT
+
+Copyright 2000-7 Vlado Keselj F<http://www.cs.dal.ca/~vlado>
+
+This script is provided "as is" without expressed or implied warranty.
+This is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
+
+The latest version can be found at F<http://www.cs.dal.ca/~vlado/srcperl/>.
+
+=cut

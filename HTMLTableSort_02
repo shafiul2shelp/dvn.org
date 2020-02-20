@@ -1,0 +1,330 @@
+#!/data/asictools/bin/perl -w
+package HTML::TableManipulate
+
+=head1 NAME
+
+HTML::TableManipulate - manipulate the rows and columns of a HTML document containing a single table.
+
+=head1 SYNOPSIS
+
+use HTML::TableManipulate
+
+open(FH,$File) or die "File $File not readable"; 
+while(<FH>){$Input.=$_}
+close(FH);
+open(FH,">Status.html");
+my $Tree=Init($Input);
+SortColumns($Tree,3,2,1,0,4,5,6);
+print FH SortRows($Tree,0);
+$Tree->delete();
+close FH;
+
+=head1 DESCRITION
+
+This package reads a HTML document as string containing a single table
+without colspan or rowspan attributes (a simple grid); outside of this table other HTML entities are allowed (excepting a second table).
+
+=head1 PREREQUISITES
+
+HTML::TreeBuilder
+
+=head1 SCRIPT CATEGORIES
+
+Web
+
+=head1 BUGS
+
+
+=head1 AUTHOR
+
+    Bernard Weiler; Siemens ICN TR ON DA; 2.99; Bernard.Weiler@icn.siemens.de
+
+=head1 FUNCTIONS
+
+=cut
+
+
+    ;
+#use IgnoreUserlocal;
+use strict;
+no strict 'vars';
+use HTML::TreeBuilder;
+
+#@EXPORT=qw(Init SortColumns Watherfall SortRows FilterRows MkRowSpan);
+
+=head2 Init()
+
+Has to be called one before other subs.
+returns reference to a parse-tree (called $p in other subs)
+
+=cut
+sub Init($){
+    my $Input=shift;
+    my $Tree=HTML::TreeBuilder->new;
+    $Tree->implicit_tags(1);
+    $Tree->parse($Input);
+    return $Tree;
+}
+
+=head2 SortColumns($p,1,2,3,...)
+Sorts columns according to the column number 1,2,3...
+returns as_HTML.
+
+=cut
+sub SortColumns($;@){
+    my $Tree=shift;
+    local @Conf=@_;
+    $Tree->traverse(\&_SortColumns);
+    return $Tree->as_HTML();
+}
+
+sub _SortColumns(){
+    my $Node=shift;
+    return 1 unless(ref $Node);
+    if($Node->tag() eq 'table'){
+	#$Node->attr('cols',scalar @Conf);
+	return 1;
+    }
+    return 1 unless($Node->tag() eq 'tr');
+    my @il;
+    foreach(@{$Node->content()}){
+	next unless(ref $_);
+	unless(($_->tag() eq 'td')or($_->tag() eq 'th')){
+	    warn"Internal error: non-TD found within TR: ".$_->tag(); 
+	    next;
+	}
+	push(@il,$_);
+	#print STDERR "element ".((ref $_)? $_->tag(): $_) ."\n";
+    }
+    #print STDERR "count ".scalar @il."\n";
+    @{$Node->content()}=();
+    foreach(@Conf){
+	if(($_<0)or($_>=scalar(@il))){
+	    warn"Illegal TD position: $_";
+	    next;
+	}
+	$Node->push_content($il[$_]);
+    }
+    return 0;
+}
+
+=head2 Watherfall($p)
+
+Repeats heading cell-content for every cell containing the special string '""'.
+returns as_HTML.
+
+=cut
+sub Watherfall($){
+    my $Tree=shift;
+    local @Elements;
+    $Tree->traverse(\&_Watherfall);
+    return $Tree->as_HTML();
+}
+
+sub _Watherfall(){
+    my $Node=shift;
+    return 1 unless(ref $Node);
+    return 1 unless($Node->tag() eq 'tr');
+    my $ii=-1;
+    foreach(@{$Node->content()}){
+	next unless(ref $_);
+	next unless(($_->tag() eq 'td')or($_->tag() eq 'th'));
+	$ii++;
+	my $is=$_->as_HTML;
+	$is=~s|<.*?>||g;
+	if($is=~/^\s*""\s*$/){@{$_->content()}=@{$Elements[$ii]->content()}}
+	else{$Elements[$ii]=$_}
+    }
+    return 0;
+}
+
+=head2 SortRows($p,$Column)
+Sorts the rows of a table according to the strings in column $Column.
+Returns as_HTML.
+
+=cut
+sub SortRows($$){
+    my $Tree=shift;
+    local $Column=shift;
+    local (%Elements,@Elements2,$Table,$Th);
+    $Tree->traverse(\&_SortRows1);
+    my @il;
+    push(@il,$Th) if($Th);
+    foreach my $El (sort keys %Elements){
+	push(@il,@{$Elements{$El}});
+    }
+@{$Table->content()}=@il;
+    return $Tree->as_HTML();
+}
+
+=head2 FilterRows($p,$Column,$Accept,$Deny)
+Drop the rows of a table according to the $Accept and $Deny RegExp test for column $Column.
+Returns as_HTML.
+Ommit $Deny by setting $Deny = ''. Accept all by setting $Accept = '.*'.
+
+=cut
+sub FilterRows($$$$){
+    my $Tree=shift;
+    local $Column=shift;
+    local $Accept=shift;
+    local $Deny=shift;
+    local (%Elements,@Elements2,$Table,$Th);
+    $Tree->traverse(\&_SortRows1);
+    my @il;
+    push(@il,$Th) if($Th);
+    foreach my $El (@Elements2){
+	push(@il,$El->[0]) if(($El->[1] =~ $Accept)and(($Deny eq '')or($El->[1] !~ $Deny)));
+    }
+    @{$Table->content()}=@il;
+    return $Tree->as_HTML();
+}
+
+sub _SortRows1(){
+    my $Node=shift;
+    return 1 unless(ref $Node);
+    if($Node->tag() eq 'table'){
+	$Table=$Node;
+	return 1;
+    }
+    return 1 unless($Node->tag() eq 'tr');
+    my $ii=-1;
+    foreach(@{$Node->content()}){
+	next unless(ref $_);
+	if($_->tag() eq 'th'){
+	    $Th=$Node;
+	    return 0;
+	}
+	$ii++;
+	#print STDERR $_->tag." $ii $Column\n";
+	next unless($ii == $Column);
+	warn"TD tag expected"  unless($_->tag() eq 'td');
+	#print STDERR $_->tag;
+	my $is=$_->as_HTML;
+	$is=~s|<.*?>||g;
+	$is=~s|\s+| |g;
+	$is=~s/^\s+|\s+$//g;
+	#print STDERR $is;
+	#print STDERR $_->tag." $is $Column\n";
+	$Elements{$is}=[] unless(exists $Elements{$is});
+	push(@{$Elements{$is}},$Node);
+	push(@Elements2,[$Node,$is]);
+    }
+    return 0;
+}
+
+=head2 MkRowSpan($p,$ColNr)
+
+Adjust RowSpan for every cell-tupel with simila content.
+The optional $ColNr restrict adjusting to Column $ColNr.
+Returns as_HTML.
+
+=cut
+sub MkRowSpan($;$){
+    my $Tree=shift;
+    local $ColNr=shift;
+    $ColNr=-1 unless defined $ColNr;
+    local (@Elements);
+    $Tree->traverse(\&_MkRowSpan);
+    return $Tree->as_HTML();
+}
+
+sub _MkRowSpan(){
+    my $Node=shift;
+    return 1 unless(ref $Node);
+    return 1 unless($Node->tag() eq 'tr');
+    my $ii=-1;
+    foreach(@{$Node->content()}){
+	next unless(ref $_);
+	#print STDERR $_->tag." $ii $Column\n";
+	next unless($_->tag() eq 'td');
+	$ii++;
+	#print STDERR $_->tag;
+	unless(defined $Elements[$ii]){
+	    $Elements[$ii]=$_;
+	    next;
+	}
+	my $is=$_->as_HTML;
+	$is=~s|<.*?>||g;
+	$is=~s|\s+| |g;
+	$is=~s/^\s+|\s+$//g;
+	my $iss=$Elements[$ii]->as_HTML;
+	$iss=~s|<.*?>||g;
+	$iss=~s|\s+| |g;
+	$iss=~s/^\s+|\s+$//g;
+	#print STDERR ">$is $iss<\n" if($iss =~/mega/);
+	if((($ColNr<0)or($ColNr == $ii))and($is eq $iss)){
+	    $_='';
+	    my $iii=$Elements[$ii]->attr('rowspan');
+	    $iii=(defined $iii)? $iii+1: 2;
+	    $Elements[$ii]->attr('rowspan',$iii);
+	}
+	else{
+	    $Elements[$ii]=$_;
+	    $Elements[$ii]->attr('rowspan',1);
+	}
+    }
+    return 0;
+}
+
+
+
+
+
+
+
+
+
+#package main;
+
+#use HTML::TableManipulate;
+
+
+my $File=shift;
+my $Header=$File;
+$Header=~s|\.html||;
+die"require name of TabOrig" unless $File;
+my $Input=''; 
+open(FH,$File) or die "File $File not readable"; 
+while(<FH>){$Input.=$_}
+close(FH);
+my $Tree;
+
+foreach my $ii (qw(2 3 4 5 6 7 8)){
+#foreach my $ii (qw(5)){
+  open(FH,">${Header}_Col$ii.html");
+  $Tree=Init($Input);
+  FilterRows($Tree,$ii,".+","");
+  print FH SortColumns($Tree,$ii,0,1,2,3,4,5,6,7,8,9,10);
+  #print FH SortRows($Tree,1);
+  $Tree->delete();
+  close FH;
+}
+
+exit 0;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

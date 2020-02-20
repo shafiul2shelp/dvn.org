@@ -1,0 +1,993 @@
+#!perl
+############################################################
+## logAnalyzer
+## Written By: Rohit Mishra ( rohit[at]rohitmishra.com)
+############################################################
+
+use strict;
+use Tk 800;
+use Getopt::Long;
+use Tk::FileSelect;
+use Tk::ROText;
+use Tk::Dialog;
+require Tk::Table;
+
+my $localtime = localtime(time);
+my $VERSION = "1.0";
+
+my $topwin = undef;
+my $bg_color = 'wheat2';
+my $status = "No Input";
+my $null = undef;
+my $minute = undef;
+my $hour = undef;
+my $day = undef;
+my $month = undef;
+my $year = undef;
+my $width = 1000;
+my $height = 800;
+my $anonymous = undef;
+my $textwidget = undef;
+my $f1 = undef;
+my $scrolledlistboxhostip = undef;
+my $scrolledlistboxsite = undef;
+my $framelbhostip = undef;
+my $scrolledtopcanvas = undef;
+my $scrolledbottext = undef;
+my $usage = undef;
+my $ontime = undef;
+my $zerotime = undef;
+my $endtime = undef;
+my $idletime = undef;
+my $percentidle = undef;
+my $utilitycanvas = undef;
+my $tablecanvas = undef;
+
+my $summarytext = " 
+
+---------------------------------------------------
+Report generated on : $localtime
+Input logfile: LOGFILE
+---------------------------------------------------
+
+------------------------
+Internet Usage Summary 
+------------------------
+
+	Zero Time ( smallest time in the logfile ): ZERO_TIME
+	End Time ( largest time in the logfile ): END_TIME
+
+	Total internet usage time: USAGE_TIME ( PERCENT_USAGE % )
+	Total internet idle time: IDLE_TIME ( PERCENT_IDLE % )
+	
+	Total number of (unique) sites accessed: UNIQUE_SITES_ACCESSED
+	Total number of (unique) Host IP addresses: UNIQUE_HOST_IP
+	
+";
+
+my $front = "
+logAnalyzer version $VERSION
+-----------------------
+Written by: Rohit Mishra
+E-mail: rohit\@rohitmishra.com
+Purpose: Logfile Analyzer
+Dated:$localtime
+
+";
+
+my %monthhash = ( 
+"Jan" => 1,
+"Feb" => 2,
+"Mar" => 3,
+"Apr" => 4,
+"May" => 5,
+"Jun" => 6,
+"Jul" => 7,
+"Aug" => 8,
+"Sep" => 9,
+"Oct" => 10,
+"Nov" => 11,
+"Dec" => 12 )
+;
+
+
+my $database = {};
+my $logfile = undef;
+my $help = undef;
+
+GetOptions ( "help"  => \$help );
+
+if( $help ){
+	&Usage;
+	exit(0);
+}
+
+
+#### Main Window
+####
+my $mw = MainWindow->new(-title=>"LogAnalyzer", -background=>$bg_color);
+$mw->minsize($width, $height);
+$mw->maxsize($width, $height);
+
+#### Menu bar
+####
+my $menubar = $mw->Frame( -relief => 'raised', -borderwidth => 2 )->pack( -side => 'top', -fill => 'x' );
+
+my $fmenubutton = $menubar->Menubutton(qw/-text File -underline 0 -tearoff 0 -menuitems/ =>
+  [
+    [Button => 'Open',    -command => sub{ \&Open( $logfile )}],
+    [Separator => ''],
+    [Button => 'Quit', -command => sub{exit}],
+  ])->pack(-side=>'left');
+
+my $emenubutton = $menubar->Menubutton(qw/-text Edit -state disabled -underline 0 -tearoff 0 -menuitems/ =>
+  [
+    [Button => 'Save as PS',  -command => \&SaveAsPS ],
+  ])->pack(-side=>'left');
+
+my $omenubutton = $menubar->Menubutton(qw/-text Options -state disabled -underline 0 -tearoff 0 -menuitems/ =>
+  [
+    [Button => 'View Raw Log',  -command => sub{ \&ViewRawLog( $logfile )}],
+    [Separator => ''],
+    [Button => 'View Statistics', -command => \&ViewStatistics],
+    [Separator => ''],
+    [Button => 'View Tabular form', -command => \&ViewTabular],
+  ])->pack(-side=>'left');
+
+my $frontcanvas = $mw->Canvas( -relief => 'sunken', -background => $bg_color )->pack( -side => 'top', -fill => 'both', -expand => 1 );
+
+my $fronttext = $frontcanvas->createText( ($width/2), $height/2, -tags => 'fronttext', -text => $front, -font => "-adobe-courier-bold-o-normal--24-240-75-75-m-150-iso8859-1", -anchor => 'center' );
+
+#### Status bar
+####
+my $statusbar = $mw->Frame( -relief => 'raised', -borderwidth => 2 )->pack( -side => 'bottom', -fill => 'x' );
+
+$statusbar->Label( -text => "Status :" )->pack( -side => 'left' );
+my $statuswid = $statusbar->Label( -textvariable => \$status )->pack( -side => 'left');
+####
+
+print "\n\n";
+
+#### Main loop
+####
+MainLoop;
+
+#### Open subroutine
+####
+sub Open(){
+        my $CWD = $ENV{PWD};
+	my $xy = undef;
+        my $types = [
+                        ['All Files',        '*',             ],
+                        ['Text Files',       ['.txt', '.text']],
+                    ];
+
+        $logfile = $mw->FileSelect( -directory => $CWD, -title=>'Select File', -verify => ['-f','-r'] )->Show;
+
+	if( defined $logfile ){
+		open( FILE, "< $logfile" ) || $mw->Dialog( -title => 'Warning', -text => "Could not open file $logfile: $!")->Show('-global');
+
+		close( FILE );
+		$omenubutton->configure( -state => 'normal' );	
+		$emenubutton->configure( -state => 'normal' );	
+		ParseLogfile($logfile);
+		$status = "Opened logfile: $logfile";
+		$frontcanvas->destroy;
+		&ViewRawLog( $logfile );
+	}
+}
+
+#### ViewRawLog subroutine
+####
+sub ViewRawLog(){
+	my $logfile = shift;
+	my @slurp = ();
+	my $slurp = undef;
+	
+	if( defined $textwidget ){
+		return;
+	}
+	if( defined $f1 ){
+		$f1->destroy;
+		$f1 = undef;
+	}
+	if( defined $utilitycanvas){
+		$utilitycanvas->destroy;
+		$utilitycanvas = undef;
+	}
+	if( defined $scrolledlistboxhostip ){
+		$scrolledlistboxhostip->destroy;
+		$scrolledlistboxhostip = undef;
+	}
+	if( defined $scrolledlistboxsite ){
+		$scrolledlistboxsite->destroy;
+		$scrolledlistboxsite = undef;
+	}
+	if( defined $scrolledtopcanvas ){
+		$scrolledtopcanvas->destroy;
+		$scrolledtopcanvas = undef;
+	}
+	if( defined $scrolledbottext ){
+		$scrolledbottext->destroy;
+		$scrolledbottext = undef;
+	}
+	if( defined $tablecanvas ){
+		$tablecanvas->destroy;
+		$tablecanvas = undef;
+	}
+	$textwidget = $mw->Scrolled( "Text", -scrollbars => "osoe", -wrap => "none", -background => $bg_color )->pack(-fill => "both", -expand => 1);
+	open( LOG, "$logfile" );
+	@slurp = <LOG>;
+	$slurp = join('', @slurp );
+	close(LOG);
+	$textwidget->insert( 'end', $slurp);
+	$textwidget->configure( qw/-state disabled/);
+	$status = "Viewing Raw Logfile: $logfile";
+}
+
+#### ViewStatistics subroutine
+####
+sub ViewStatistics(){
+	if( defined $textwidget ){
+		$textwidget->destroy;
+		$textwidget = undef;
+	}
+	if( defined $utilitycanvas){
+		$utilitycanvas->destroy;
+		$utilitycanvas = undef;
+	}
+	if( defined $f1 ){
+		return;
+	}
+	if( defined $tablecanvas ){
+		$tablecanvas->destroy;
+		$tablecanvas = undef;
+	}
+	$f1 = $mw->Frame( -relief => 'raised', -borderwidth => 2 )->pack( -side => 'top', -fill => 'x' );
+	my $summarybutton = $f1->Button( -text => "View Summary", -command => [\&ViewSummary] )->pack( -side => 'left' );
+	my $timebutton = $f1->Button( -text => "Utility Graph", -command => [\&UtilityGraph] )->pack( -side => 'left' );
+	#my $siteipbutton = $f1->Button( -text => "Sort by IP", -command => [\&SortByIP] )->pack( -side => 'left' );
+
+	$status = "Viewing Statistics: Summary";
+}
+
+#### ViewSummary subroutine
+####
+sub ViewSummary(){
+	
+	my $tmpvar;
+	if( defined $utilitycanvas){
+		$utilitycanvas->destroy;
+		$utilitycanvas = undef;
+	}
+	if( defined $tablecanvas ){
+		$tablecanvas->destroy;
+		$tablecanvas = undef;
+	}
+	if( ! defined $scrolledlistboxhostip ){
+		$scrolledlistboxhostip = $mw->Scrolled( "Listbox", -scrollbars => "osoe", -background => $bg_color )-> pack( -side => 'left', -fill => 'y' );
+		$scrolledlistboxhostip->insert( 'end', "Host IP addresses" );
+		$scrolledlistboxhostip->insert( 'end', "-----------------" );
+		foreach $tmpvar ( keys %$database ){
+			$scrolledlistboxhostip->insert( 'end', ${$database->{$tmpvar}}[2]);
+		}
+	}
+	if( ! defined $scrolledlistboxsite ){
+		$scrolledlistboxsite = $mw->Scrolled( "Listbox", -scrollbars => "osoe", -background => $bg_color )-> pack( -side => 'left', -fill => 'y' );
+		$scrolledlistboxsite->insert( 'end', "URL                  " );
+		$scrolledlistboxsite->insert( 'end', "---------------------" );
+		foreach $tmpvar ( keys %$database ){
+			$scrolledlistboxsite->insert( 'end', ${$database->{$tmpvar}}[6] );
+		}
+	}
+	if( ! defined $scrolledtopcanvas ){
+		$scrolledtopcanvas = $mw->Scrolled( "Canvas", -height => ( $height-10)/2, -background => $bg_color, -scrollbars => "osoe" )->pack( -side => 'top', -fill => 'x' );
+		$scrolledtopcanvas->createText( 300 , 15, -tags => 'summary', -text => "Internet Usage Summary" );
+		$scrolledtopcanvas->createText( 300 , 20, -tags => 'summary', -text => "----------------------" );
+		$scrolledtopcanvas->createOval( 70 , 100, 600, 300, -tags => 'summary', -fill => 'blue' );
+		
+		$ontime = $endtime - $zerotime;
+		$idletime = $ontime - $usage;
+
+		$percentidle = sprintf( "%.0f", ($idletime*100)/$ontime );
+		my $angle = sprintf( "%.1f", 360/$percentidle );		
+		$scrolledtopcanvas->createArc( 70 , 100, 600, 300, -tags => 'summary', -fill => 'red', -start => 0, -extent => $angle );
+		$scrolledtopcanvas->createRectangle( 510, 310, 520, 320, -fill => 'red', -tags => 'summary' );
+		$scrolledtopcanvas->createRectangle( 510, 340, 520, 350, -fill => 'blue', -tags => 'summary' );
+		$scrolledtopcanvas->createText( 520, 310, -tags => 'summary', -text => "% Idle time", -anchor => 'nw');
+		$scrolledtopcanvas->createText( 520, 340, -tags => 'summary', -text => "% Usage time", -anchor => 'nw');
+	}
+	if( ! defined $scrolledbottext ){
+		$scrolledbottext = $mw->Scrolled( "ROText", -background => $bg_color, -scrollbars => "osoe" )->pack( -side => 'top', -fill => 'both' );
+
+		my $zerodate = localtime($zerotime/1000);
+		my $enddate = localtime($endtime/1000);
+		
+
+		$summarytext =~ s/LOGFILE/$logfile/g; 
+		$summarytext =~ s/ZERO_TIME/$zerodate/g;	
+		$summarytext =~ s/END_TIME/$enddate/g;	
+		$summarytext =~ s/USAGE_TIME/$usage milliseconds/g;	
+		$idletime = sprintf( "%.0f", $idletime);
+		$summarytext =~ s/IDLE_TIME/$idletime milliseconds/g;	
+		$summarytext =~ s/PERCENT_IDLE/$percentidle/g;	
+		my $percentusage = ( 100 - $percentidle );
+		$summarytext =~ s/PERCENT_USAGE/$percentusage/g;	
+
+		my $ipaddress = {};
+
+		foreach $tmpvar ( keys %$database ){
+			$ipaddress->{${$database->{$tmpvar}}[2]} = "junk";	
+		}
+		my $unique_ip = scalar ( keys %$ipaddress );
+		
+		$summarytext =~ s/UNIQUE_HOST_IP/$unique_ip/g;	
+
+		my $sites = {};
+		my $site = undef;
+		foreach $tmpvar ( keys %$database ){
+			my $junk = ${$database->{$tmpvar}}[6];
+			(undef, $site) = ( $junk =~ m|(\w+)://(.*?)/|g );
+			$sites->{$site} = "junk";
+		}
+		my $unique_sites = scalar( keys %$sites );
+
+		$summarytext =~ s/UNIQUE_SITES_ACCESSED/$unique_sites/g;	
+
+		$scrolledbottext->insert( 'end', $summarytext );
+		$scrolledbottext->configure( -state => 'disabled' );
+		
+	}
+
+}
+
+#### UtilityGraph subroutine
+#### 
+sub UtilityGraph(){
+
+	if( defined $textwidget ){
+		$textwidget->destroy;
+		$textwidget = undef;
+	}
+	if( defined $scrolledlistboxhostip ){
+		$scrolledlistboxhostip->destroy;
+		$scrolledlistboxhostip = undef;
+	}
+	if( defined $scrolledlistboxsite ){
+		$scrolledlistboxsite->destroy;
+		$scrolledlistboxsite = undef;
+	}
+	if( defined $scrolledtopcanvas ){
+		$scrolledtopcanvas->destroy;
+		$scrolledtopcanvas = undef;
+	}
+	if( defined $scrolledbottext ){
+		$scrolledbottext->destroy;
+		$scrolledbottext = undef;
+	}
+	if( defined $tablecanvas ){
+		$tablecanvas->destroy;
+		$tablecanvas = undef;
+	}
+
+	if( ! defined $utilitycanvas ){
+		$utilitycanvas = $mw->Scrolled( "Canvas", -background => $bg_color, -scrollbars => 'osoe' )->pack( -side => 'top', -fill => 'both', -expand => 1 );
+		my $radioframe = $utilitycanvas->Frame( -relief => 'sunken', -background => $bg_color)->pack( -side => 'top' ,-fill => 'x');
+		$radioframe->Radiobutton( -text => "View Day Statistics", -command => sub { &ViewByDay(0);} )-> pack( -side => 'left' );
+		$radioframe->Radiobutton( -text => "View Month Statistics", -command => sub { &ViewByDay(1);} )-> pack( -side => 'left' );
+		$radioframe->Radiobutton( -text => "View Year Statistics", -command => sub { &ViewByDay(2);} )-> pack( -side => 'left' );
+
+	}
+}
+
+sub SaveAsPS(){
+	my $CWD = $ENV{PWD};
+	my $psfile = undef;
+	my $filewin = undef;
+
+	if( ( ! defined $utilitycanvas ) && ( ! defined $tablecanvas ) ){
+		my $dialog = $mw->Dialog(-title => 'Warning', -text => 'Nothing to save...');
+       		$dialog->Show('-global');
+	} else {
+	    if( ! defined $filewin ){
+		$filewin = $mw->Toplevel( -title => 'Enter file name..' , -background => $bg_color);
+		$filewin->minsize( 200, 100 );
+		$filewin->maxsize( 200, 100 );
+		my $efile = $filewin->Entry( -relief => 'sunken', -background => $bg_color )->pack( -side => 'top', -fill => 'x' );
+		my $fileframe = $filewin->Frame( -relief => 'sunken', -background => $bg_color )->pack( -side => 'bottom', -fill => 'x' );
+		$fileframe->Button( -text => 'ok', -relief => 'raised', -command => sub {
+						$psfile = $efile->get;
+						if( $psfile eq ""){
+							my $dialog = $mw->Dialog(-title => 'Warning', -text => 'Invalid File!!');
+							$dialog->Show('-global');
+						} else {
+							if( defined $utilitycanvas ){
+								$utilitycanvas->postscript( -file => "$CWD/$psfile" , -rotate => 1 );
+							} elsif ( defined $tablecanvas ){
+								$tablecanvas->postscript( -file => "$CWD/$psfile" , -rotate => 1 );
+							}
+						}
+						$filewin->destroy;
+						$filewin = undef;
+					 } )->pack( -side => 'left' );
+		$fileframe->Button( -text => 'Cancel', -relief => 'raised', -command => sub {
+						$filewin->destroy;
+						$filewin = undef;
+					 } )->pack( -side => 'left' );
+	    }
+	}
+}
+
+sub ViewTabular(){
+	my $rows = 5;
+	my $cols = 3;
+	my $font = "-adobe-courier-medium-r-normal--18-180-75-75-m-110-iso8859-1";
+	my $i = undef;
+	my $j = undef;
+	if( defined $f1 ){
+		$f1->destroy;
+		$f1 = undef;
+	}
+	if( defined $utilitycanvas){
+		$utilitycanvas->destroy;
+		$utilitycanvas = undef;
+	}
+	if( defined $textwidget ){
+		$textwidget->destroy;
+		$textwidget = undef;
+	}
+	if( defined $scrolledlistboxhostip ){
+		$scrolledlistboxhostip->destroy;
+		$scrolledlistboxhostip = undef;
+	}
+	if( defined $scrolledlistboxsite ){
+		$scrolledlistboxsite->destroy;
+		$scrolledlistboxsite = undef;
+	}
+	if( defined $scrolledtopcanvas ){
+		$scrolledtopcanvas->destroy;
+		$scrolledtopcanvas = undef;
+	}
+	if( defined $scrolledbottext ){
+		$scrolledbottext->destroy;
+		$scrolledbottext = undef;
+	}
+	my $max = scalar keys %$database;
+	if( ! defined $tablecanvas ){
+		$tablecanvas = $mw->Scrolled( "Canvas", -scrollbars => 'osoe', -confine => 'yes', -relief => 'sunken', -background => $bg_color) ->pack( -side => 'top', -expand => 1, -fill => 'both' );
+
+		$tablecanvas->createText( 30, 10, -font => $font, -text => "Following table summarizes the server usage:-", -anchor => 'nw' );	
+
+		for( $i = 0; $i <= 4; $i++ ){
+			$tablecanvas->createLine( 30 + $i*200, 30, 30 + $i*200, 30 + 30*($max + 1), -width => 2 , -tags => 'table');
+		}
+		for( $j = 0; $j <= $max + 1; $j++ ){
+			$tablecanvas->createLine( 30 , 30 + $j*30, 830, 30 + 30*$j , -width => 2, -tags => 'table' );
+		}
+		$i = 0;
+		my $tmpvar = undef;
+		my @date = ();
+		my @hostip = ();
+		my @URL = ();
+		my @doctype = ();
+		foreach $tmpvar ( sort keys %$database ){
+			$i++;
+			$date[$i] = ${$database->{$tmpvar}}[0];
+			$hostip[$i] = ${$database->{$tmpvar}}[2];
+			$URL[$i] = ${$database->{$tmpvar}}[6];
+			$doctype[$i] = ${$database->{$tmpvar}}[-1];
+			$tablecanvas->createText( 32, 32, -font => $font,-fill => 'red',  -text => "Date" , -anchor => 'nw');
+			$tablecanvas->createText( 232, 32,-font => $font,-fill => 'red',   -text => "Host IP Address" , -anchor => 'nw');
+			$tablecanvas->createText( 432, 32, -font => $font,-fill => 'red',  -text => "URL Accessed" , -anchor => 'nw');
+			$tablecanvas->createText( 632, 32, -font => $font,-fill => 'red',  -text => "Document Type" , -anchor => 'nw');
+			$tablecanvas->createText( 32, 32 + $i*30, -fill => 'blue', -text => $date[$i] , -anchor => 'nw');
+			$tablecanvas->createText( 232, 32 + $i*30, -text => $hostip[$i], -anchor => 'nw' );
+			$tablecanvas->createText( 432, 32 + $i*30, -text => $URL[$i] , -anchor => 'nw');
+			$tablecanvas->createText( 632, 32 + $i*30, -text => $doctype[$i], -anchor => 'nw' );
+		}
+		my @tmp = $tablecanvas->bbox( 'table' );
+		$tmp[0] =~ s/\d+/0/;
+		$tmp[1] =~ s/\d+/0/;
+		$tablecanvas->configure( -scrollregion => \@tmp );
+	}
+	
+}
+
+sub ViewByDay(){
+	my $value = shift;
+	my $tmpvar = undef;
+	my $eday = undef;
+	my $emonth = undef;
+	my $eyear = undef;
+	my $invalid = undef;
+
+	my $startdate = localtime($zerotime/1000);
+	my $enddate = localtime($endtime/1000);
+
+	my ( $null, $startmonth, $startday, $starthour, $startmin, $startsec, $startyear ) = ( $startdate =~ m|(\w+)\s+(\w+)\s+(\d+)\s+(\d+):(\d+):(\d+)\s+(\d+)|g );
+	my ( $null1, $endmonth, $endday, $endhour, $endmin, $endsec, $endyear ) = ( $enddate =~ m|(\w+)\s+(\w+)\s+(\d+)\s+(\d+):(\d+):(\d+)\s+(\d+)|g );
+
+	$startmonth = $monthhash{$startmonth};
+	$endmonth = $monthhash{$endmonth};
+
+	if( ! defined $topwin ){
+		$topwin = $mw->Toplevel( -title => 'Enter Date', -background => $bg_color);
+		$topwin->minsize( 250, 100 );
+		$topwin->maxsize( 250, 100 );
+		my $entryframe = $topwin->Frame( -relief => 'sunken', -background => $bg_color)->pack( -side => 'top', -fill => 'x' );
+		my $label = $entryframe->Label( -background => $bg_color, -relief => 'raised', -text => "Enter Date( DD/MM/YY )")->pack( -side => 'left');
+		my $entrydd = $entryframe->Entry( -width => 2, -background => $bg_color )->pack( -side => 'left');
+		my $entrymm = $entryframe->Entry( -width => 2, -background => $bg_color )->pack( -side => 'left');
+		my $entryyy = $entryframe->Entry( -width => 4, -background => $bg_color )->pack( -side => 'left');
+		my $okbutton = $topwin->Button( -background => $bg_color, -text => "OK", -command => 
+			sub{ 	
+				$invalid = 0;
+				$eday = $entrydd->get;
+				$emonth = $entrymm->get;
+				$eyear = $entryyy->get;
+
+				if( $eyear eq "" ){
+					$eyear = undef;
+				}
+				if( $emonth eq "" ){
+					$emonth = undef;
+				}
+				if( $eday eq "" ){
+					$eday = undef;
+				}
+
+				if( defined $eyear ){
+					if( ( $eyear < $startyear ) || ($eyear > $endyear ) ){
+						my $dialog = $mw->Dialog(-title => 'Warning', -text => 'Invalid Year!!');
+                				$dialog->Show('-global');
+						$topwin->destroy;
+						$topwin = undef;
+						return;
+					}
+				} else {
+					$invalid = 1;
+				} 
+				if( defined $emonth ){
+					if(  $emonth > 12 ){
+						my $dialog = $mw->Dialog(-title => 'Warning', -text => 'Invalid Month!!');
+                				$dialog->Show('-global');
+						$topwin->destroy;
+						$topwin = undef;
+						return;
+					}
+				} else {
+					$invalid = 1;
+				}
+				if( defined $eday ){
+					if ( $eday > 31 ){
+						my $dialog = $mw->Dialog(-title => 'Warning', -text => 'Invalid Day!!');
+                				$dialog->Show('-global');
+						$topwin->destroy;
+						$topwin = undef;
+						return;
+					}
+				} else {
+					$invalid = 1;
+				}
+	
+				if( $invalid == 1 ){
+					my $dialog = $mw->Dialog(-title => 'Warning', -text => 'Please enter all the values.');
+                			$dialog->Show('-global');
+					$topwin->destroy;
+					$topwin = undef;
+					return;
+				}
+
+				my @hourarray = (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
+				my @dayarray = (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
+				my @montharray = (0,0,0,0,0,0,0,0,0,0,0,0);
+			    if( defined $eday || defined $emonth || defined $eyear ){
+				
+
+				foreach $tmpvar ( keys %$database ){
+					my $junk = localtime($tmpvar);
+					my ( $null, $month, $day, $hour, $min, $sec, $year ) = ( $junk =~ m|(\w+)\s+(\w+)\s+(\d+)\s+(\d+):(\d+):(\d+)\s+(\d+)|g );
+					$month = $monthhash{$month};
+					if( $eyear == $year && $emonth == $month && $eday == $day ){
+						$hourarray[$hour] += ${$database->{$tmpvar}}[4];	
+					}
+					if( $eyear == $year && $emonth == $month ){
+						$dayarray[$day] += ${$database->{$tmpvar}}[4];
+					}
+					if( $eyear == $year ){
+						$montharray[$month] += ${$database->{$tmpvar}}[4];
+					}
+				}
+				
+
+			    }
+				my @hoursorted = sort {$a <=> $b} @hourarray;
+				my @daysorted = sort {$a <=> $b} @dayarray;
+				my @monthsorted = sort {$a <=> $b} @montharray;
+				my $hourgreatest = $hoursorted[-1];
+				my $daygreatest = $daysorted[-1];
+				my $monthgreatest = $monthsorted[-1];
+
+				$topwin->destroy; 
+				$topwin = undef ;
+			   	my $coor = undef;
+		    	   	my $xtext = undef;
+			   	my $ytext = undef;
+			   	my $yytext = undef;
+			   if( $value == 0 ){
+				$utilitycanvas->delete( 'coords', 'txt', 'bar' );
+				$coor = $utilitycanvas->createLine( 100, 100 , 100, 600 , 892, 600,  
+								-tags => 'coords', -width => 2);
+				$xtext = $utilitycanvas->createText( 450, 630, -tags => 'txt', -text => "Hour of Day", -anchor => 'nw');
+				my $i = undef;
+				for( $i = 0; $i <= 23; $i++){
+					$utilitycanvas->createText( 100 + ($i*33), 610, -text => $i, -anchor => 'nw', -tags => 'txt');
+					$utilitycanvas->createRectangle( 100 + ( $i*33 ), 600, 100 + ( ($i+1)*33 ), 600 - ( 500*$hourarray[$i])/$hourgreatest, -tags => 'bar', -fill => 'red' );  
+				}
+				$ytext = $utilitycanvas->createText( 5, 300, -text => "Bytes", -anchor => 'nw', -tags => 'txt');
+				$yytext = $utilitycanvas->createText( 5, 310, -text => "Transfered", -anchor => 'nw', -tags => 'txt');
+			   } elsif( $value == 1 ){
+				$utilitycanvas->delete( 'coords', 'txt', 'bar' );
+				$coor = $utilitycanvas->createLine( 100, 100 , 100, 600 , 875, 600,  
+								-tags => 'coords', -width => 2);
+				$xtext = $utilitycanvas->createText( 450, 630, -tags => 'txt', -text => "Day of Month", -anchor => 'nw');
+				my $i = undef;
+				for( $i = 0; $i <= 30; $i++){
+					$utilitycanvas->createText( 100 + ($i*25), 610, -text => $i, -anchor => 'nw', -tags => 'txt');
+					$utilitycanvas->createRectangle( 100 + ( $i*25 ), 600, 100 + ( ($i+1)*25 ), 600 - ( 500*$dayarray[$i])/$daygreatest, -tags => 'bar', -fill => 'red' );  
+				}
+				$ytext = $utilitycanvas->createText( 5, 300, -text => "Bytes", -anchor => 'nw', -tags => 'txt');
+				$yytext = $utilitycanvas->createText( 5, 310, -text => "Transfered", -anchor => 'nw', -tags => 'txt');
+
+			   } elsif( $value == 2 ){
+				$utilitycanvas->delete( 'coords', 'txt', 'bar' );
+				$coor = $utilitycanvas->createLine( 100, 100 , 100, 600 , 892, 600,  
+								-tags => 'coords', -width => 2);
+				$xtext = $utilitycanvas->createText( 450, 630, -tags => 'txt', -text => "Month of Year", -anchor => 'nw');
+				my $i = undef;
+				for( $i = 0; $i <= 11; $i++){
+					$utilitycanvas->createText( 100 + ($i*66), 610, -text => $i, -anchor => 'nw', -tags => 'txt');
+					$utilitycanvas->createRectangle( 100 + ( $i*66 ), 600, 100 + ( ($i+1)*66 ), 600 - ( 500*$montharray[$i])/$monthgreatest, -tags => 'bar', -fill => 'red' );  
+				}
+				$ytext = $utilitycanvas->createText( 5, 300, -text => "Bytes", -anchor => 'nw', -tags => 'txt');
+				$yytext = $utilitycanvas->createText( 5, 310, -text => "Transfered", -anchor => 'nw', -tags => 'txt');
+
+			   }
+				
+			    } )
+		->pack( -side => 'bottom');
+	}
+
+}
+
+#### Usage subroutine
+####
+sub Usage(){
+	print STDOUT "
+
+NAME: logAnalyzer-1.0.ptk
+
+OVERVIEW: The following script is designed to read the Native Logfile Format and generate
+         outputs in different graphical forms.
+
+DESCRIPTION: The script is designed to read the logfile in the Native Logfile Format ( NLF )
+	     which is generated by the server.
+
+	     The script is written in Perl/Tk to make it platform independent. It opens a
+	     window and displays information therein. 
+
+	     Following toolbars have been implemented:-
+
+	     File - The file menubutton has two sub-menus namely Open and Quit.
+
+		    Open - It opens the fileselect dialog box. The file selected via the dialog
+		    box should be a valid NLF logfile.
+		
+		    Quit - Destroys the main window and exits the script.
+
+	     Options - The options menubutton has two sub-menus namely \"View Raw Log\" and
+	     \"View Statistics\"
+
+		    View Raw Log - It opens the Logfile in the main window and displays it in its
+		    Native Format.
+
+		    View Statistics - Activation of this button results in a sub-menubar displayed
+		    below the main menubar. The sub-menubar contains two buttons in turn, namely
+		    \"View Summary\" and \"Utility Graph\"
+
+			View Summary button, when activated displays the summary of the data logged
+			in the NLF logfile. Following information is displayed:-
+			1. All the Host IP addresses are listed, from which the accesses have been
+			   made. If a Host IP address has made an access more than one time, it 
+			   will be listed only once in the list of IP addresses.
+			2. All the URLs accessed by the users over the entire time frame in the 
+			   NLF logfile. If a URL has been accessed more than once, it will be
+			   listed only once.
+			3. The internet usage summary piechart is displayed. The idle time during
+			   the entire time frame in the logfile will be displayed as the \"red\" 
+			   colored sector in the pie and the Usage time will be displayed in \"blue\"
+			   colored sector.
+			4. The fourth part displays the information in the text format. It lists
+			   the percent usage time, percent idle time, total number of unique IP
+			   addresses, total number of unique URLs accessed etc.
+
+		        Utility Graph button, when activated opens a window with selectable radio buttons.
+			The radio buttons when activated, displays the information depending upon which 
+			radio button has been activated. Following have been implemented:-
+		        
+			1. Bytes Transfered vs Hour of day.
+			2. Bytes Transfered vs Day of month.
+			3. Byte transfered vs Month of year.
+
+		   View Tablular - Activation of this button opens the logfile in a tabular format displaying
+		   the following information:-
+		   -------------------------------------------------------------------
+		  | Date	| Host IP Address | URL accessed  | Document Type     |
+		   -------------------------------------------------------------------
+		  |	        |		  |		  |		      |
+		  |	        |		  |		  |		      |
+		  |	        |		  |		  |		      |
+		  |	        |		  |		  |		      |
+		  
+	   Edit - The Edit menubutton has a sub-menu namely Save As PS. If activated, all the displayed 
+	   information in the window can be written out in an Adobe PostScript file. This can be very 
+	   usefull for storing the day to day server usage as a file in the database.		 	 
+
+SUMMARY: LogAnalyzer.ptk written in perl/Tk can find its applications in Analyzing huge logfiles
+	 generated by servers, building information database to sort the internet usage depending 
+	 on various requirements, gaining more control over the security of the proxy servers by
+	 restricting users as per their requirements based on their duration of usage, sites accessed,
+	 peak usage time etc. This script can server as an excellent logfile analyzer for the 
+	 server administrators as well as organizations which would want to get information about
+	 accesses through or to on their local servers.
+
+KNOWN BUGS: NONE
+
+AUTHOR INFORMATION:
+
+	Rohit Mishra
+	E-mail : rohit\@rohitmishra.com
+
+";
+}
+
+#### Parse logfile
+####
+sub ParseLogfile(){
+	my $logfile = shift;
+
+	my @fields = ();
+	my $line = undef;
+	my $tmpvar = undef;
+	my $date = undef;
+	my $duration = undef;
+	my $ip_address = undef;
+	my $squid_result_code = undef;
+	my $bytes_transfered = undef;
+	my $request_method = undef;
+	my $URL = undef;
+	my $identity = undef;
+	my $hierarchy_code = undef;
+	my $fwd_host_ip_address = undef;
+	my $content_type = undef;
+
+
+	open( FILE, "$logfile");
+	while( $line = <FILE> ){
+		chomp($line);
+		if( $line =~ m|^\s*$|g ){
+			next;
+		}
+		@fields = split( /\s+/, $line );
+
+		$database->{$fields[0]} = ();
+
+		if( $fields[0] =~ m|\d+\.\d+|g ){ ## see help section xxx
+			$date = $fields[0];
+			$date =~ s/\d+\.\d+/localtime $&/e;
+		} else {
+			$date = "Undefined";
+		}
+		push( @{$database->{$fields[0]}}, $date );
+
+		if( $fields[1] =~ m|\d+|g ){ ## see help section xxx
+			$duration = sprintf( "%.2f", $fields[1]/1000 );
+		} else {
+			$duration = "Undefined";
+		}
+		push( @{$database->{$fields[0]}}, $duration );
+
+		if( $fields[2] =~ m|\d+\.\d+\.\d+\.\d+|g ){ ## see help section xxx
+			$ip_address = $fields[2];
+		} else {
+			$ip_address = "Undefined";
+		}
+		push( @{$database->{$fields[0]}}, $ip_address );
+		if( $fields[3] =~ m|\w+\/\d+|g ){ ## see help section
+			$squid_result_code = $fields[3];
+		} else {
+			$squid_result_code = "Undefined";
+		}
+		push( @{$database->{$fields[0]}}, $squid_result_code );
+		if( $fields[4] =~ m|\d+|g ){ ## see help section xxx
+			$bytes_transfered = $fields[4];
+		} else {
+			$bytes_transfered = "Undefined";
+		}
+		push( @{$database->{$fields[0]}}, $bytes_transfered );
+		if( $fields[5] =~ m|\w+|g ){ ## see help section xxx
+			$request_method = $fields[5];
+		} else {
+			$request_method = "Undefined";
+		}
+		push( @{$database->{$fields[0]}}, $request_method );
+		if( $fields[6] =~ m|\w+:\/\/[\w\d\.\_\-\/]+|g ){ ## see help section xxx
+			$URL = $fields[6];
+		} else {
+			$URL = "Undefined";
+		}
+		push( @{$database->{$fields[0]}}, $URL );
+		if( $fields[7] =~ m|\w+|g ){ ## see help section xxx
+			$identity = $fields[7];
+		} else {
+			$identity = "Undefined";
+		}
+		push( @{$database->{$fields[0]}}, $identity );
+		if( ( $fields[8] =~ m|(\w+)\/(\d+\.\d+\.\d+\.\d+)|g )|| ( $fields[8] =~ m|(\w+)\/\-|g ) ){ ## see help section xxx
+			$hierarchy_code = $1;
+			$tmpvar = $2;
+			if( defined $tmpvar ){
+				$fwd_host_ip_address = $tmpvar;
+			} else {
+				$fwd_host_ip_address = undef;
+			}
+		} else {
+			$hierarchy_code = "Undefined";
+		}
+		if( defined $fwd_host_ip_address ){
+			push( @{$database->{$fields[0]}}, "$hierarchy_code/$fwd_host_ip_address" );
+		} else {
+			push( @{$database->{$fields[0]}}, $hierarchy_code );
+		}
+
+		if( $fields[9] =~ m|\w+\/\w+|g ){ ## see help section xxx
+			$content_type = $fields[9];
+		} else {
+			$content_type = "Undefined";
+		}
+		push( @{$database->{$fields[0]}}, $content_type );
+	}
+	close( FILE );
+
+	my $tmp = 0;
+	my $tmp1 = 0;
+	my $tag = 0;
+	$zerotime = 0;
+	$endtime = 0;
+	$usage = 0;
+	foreach $tmpvar ( sort keys %$database ){
+		$usage = ( ${$database->{$tmpvar}}[1] * 1000 ) + $usage;
+		$tmp = ( ${$database->{$tmpvar}}[1] * 1000 );
+		$tmp1 = $tmpvar*1000;
+		if( $tag == 0 ){
+			$zerotime = $tmpvar*1000;
+			$tag = 1;
+		}
+	}
+	$endtime = $tmp1 + $tmp;
+
+}
+
+=head1 NAME
+
+logAnalyzer-1.0.ptk
+
+=head1 DESCRIPTION
+
+The script is designed to read the logfile in the Native Logfile Format ( NLF )
+	     which is generated by the server.
+
+	     The script is written in Perl/Tk to make it platform independent. It opens a
+	     window and displays information therein. 
+
+	     Following toolbars have been implemented:-
+
+	     File - The file menubutton has two sub-menus namely Open and Quit.
+
+		    Open - It opens the fileselect dialog box. The file selected via the dialog
+		    box should be a valid NLF logfile.
+		
+		    Quit - Destroys the main window and exits the script.
+
+	     Options - The options menubutton has two sub-menus namely "View Raw Log" and
+	     "View Statistics"
+
+		    View Raw Log - It opens the Logfile in the main window and displays it in its
+		    Native Format.
+
+		    View Statistics - Activation of this button results in a sub-menubar displayed
+		    below the main menubar. The sub-menubar contains two buttons in turn, namely
+		    "View Summary" and "Utility Graph"
+
+			View Summary button, when activated displays the summary of the data logged
+			in the NLF logfile. Following information is displayed:-
+			1. All the Host IP addresses are listed, from which the accesses have been
+			   made. If a Host IP address has made an access more than one time, it 
+			   will be listed only once in the list of IP addresses.
+			2. All the URLs accessed by the users over the entire time frame in the 
+			   NLF logfile. If a URL has been accessed more than once, it will be
+			   listed only once.
+			3. The internet usage summary piechart is displayed. The idle time during
+			   the entire time frame in the logfile will be displayed as the \"red\" 
+			   colored sector in the pie and the Usage time will be displayed in \"blue\"
+			   colored sector.
+			4. The fourth part displays the information in the text format. It lists
+			   the percent usage time, percent idle time, total number of unique IP
+			   addresses, total number of unique URLs accessed etc.
+
+		        Utility Graph button, when activated opens a window with selectable radio buttons.
+			The radio buttons when activated, displays the information depending upon which 
+			radio button has been activated. Following have been implemented:-
+		        
+			1. Bytes Transfered vs Hour of day.
+			2. Bytes Transfered vs Day of month.
+			3. Byte transfered vs Month of year.
+
+		   View Tablular - Activation of this button opens the logfile in a tabular format displaying
+		   the following information:-
+		   -------------------------------------------------------------------
+		  | Date	| Host IP Address | URL accessed  | Document Type     |
+		   -------------------------------------------------------------------
+		  |	        |		  |		  |		      |
+		  |	        |		  |		  |		      |
+		  |	        |		  |		  |		      |
+		  |	        |		  |		  |		      |
+		  
+	   Edit - The Edit menubutton has a sub-menu namely Save As PS. If activated, all the displayed 
+	   information in the window can be written out in an Adobe PostScript file. This can be very 
+	   usefull for storing the day to day server usage as a file in the database.		 	 
+
+
+=head1 README
+
+The following script is designed to read the Native Logfile Format(NLF) and generate
+outputs in different graphical forms. logAnalyzer-1.0.ptk written in perl/Tk can find its applications 
+in Analyzing huge logfiles generated by servers, building information database to sort the 
+internet usage depending on various requirements, gaining more control over the security of 
+the proxy servers by restricting users as per their requirements based on their duration of 
+usage, sites accessed, peak usage time etc. This script can server as an excellent logfile 
+analyzer for the server administrators as well as organizations which would want to get 
+information about accesses through or to on their local servers.
+
+
+=head1 PREREQUISITES
+
+This script requires the C<strict> module.  It also requires
+C<Tk 800> and C<Getopt::Long>.
+
+=head1 COREQUISITES
+
+Tk 800
+
+=pod OSNAMES
+
+Unix, Solaris, Linux
+
+=head1 AUTHOR
+
+Rohit Mishra E<lt>F<rohit@rohitmishra.com>E<gt>
+
+=head1 COPYRIGHT
+
+Copyright (c) 2006 Rohit Mishra <rohit@rohitmishra.com>. All rights reserved
+This program is a free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+
+=pod SCRIPT CATEGORIES
+
+Web
+Unix/System_administration
+Educational
+
+=cut
+

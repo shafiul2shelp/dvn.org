@@ -1,0 +1,2032 @@
+#!/usr/bin/perl -w
+# Basic webpage GET tool. Much simpler than LWP GET, but not as powerful.
+# It only needs modules installed by default, however. Also emulating the
+# headers of other browsers is well supported; setting Cookie: and Referer:
+# headers is made simpler. AND this is much better at spying on headers
+# since it dumps them literally and unmodified (particularly request
+# headers), but does not follow redirects.
+#
+# 22 November 1999	Benjamin Elijah Griffin
+use strict;
+BEGIN { $ENV{PATH} = '/usr/ucb:/bin' }
+use vars qw($EOL $url $tcpproto $nosignal $id $bv %headers $post $forcehost
+	$refer $cookie $print_request $print_body $print_heads $user $long
+	$follow $waittime $benchmark $debug $autoname $lang $dirdefault
+	$average $deviation $exitunless $head_request $urlfile $outfile
+	$postfile $contenttype
+	$INTERNAL_ERROR_CODE $VERSION $LONG_VERSION_INFO);
+use Socket;
+use Carp;
+
+$VERSION = '1.1';
+$LONG_VERSION_INFO = 'initial: 22-Nov-1999; this: 24 Sep 2003';
+$INTERNAL_ERROR_CODE = 444;
+
+$id = $0;
+$id =~ s:.*/::;
+
+$EOL = "\cm\cj";
+$tcpproto = getprotobyname('tcp');
+$contenttype   = 'application/x-www-form-urlencoded';
+$print_request = 0;
+$head_request  = 0;
+$print_body    = 1;
+$print_heads   = 0;
+$follow        = 0;
+$lang = '';
+$refer = '';
+$cookie = '';
+$bv = 'lwp-request-1.38';
+$dirdefault = 'dir-default';
+
+
+sub base64 ($);
+sub err444 ($$$);
+sub monster ($$);
+sub usage ($);
+sub saferead ();
+sub grab ($$$$$$$$$);
+
+
+# Header sets for browser masquerading
+%headers = (
+# text mode browser for Unix
+# http://artax.karlin.mff.cuni.cz/~mikulas/links
+# Version 0.84 does not do cookies or referer headers, so we might
+# misemulate it that way.
+	'links-0.84' => <<'links084Heads',
+GET ${URI} HTTP/1.1
+Host: ${HOST}
+User-Agent: Links (0.84; Linux 2.2.5-15 i686)
+${REFERER}
+${COOKIE}
+links084Heads
+
+# Forked from links, this is another text mode browser. Quirks include
+# giving a bunch away about the system, including window size, in the
+# User-Agent: and including a 'Referer' header in URLs entered by hand.
+# http://elinks.or.cz/
+	'elinks-0.5pre4-linux' => <<'elinks05p4linHeads',
+GET ${URI} HTTP/1.1
+Host: ${HOST}
+User-Agent: ELinks (0.5pre4; Linux 2.4.2-2 i68; 80x24)
+${REFERER}
+Accept: */*
+Accept-Encoding: bzip2, gzip
+Accept-Language: en
+Connection: Keep-Alive
+${COOKIE}
+elinks05p4linHeads
+
+# command line web tool using libwww
+# http://www.w3.org/ComLine/
+	'w3c-5.2.8' => <<'w3c528Heads',
+GET ${URI} HTTP/1.1
+Accept: */*
+Accept-Encoding: *;q=0.3,deflate
+TE: trailers,deflate
+Host: ${HOST}
+User-Agent: W3C-WebCon/5.2.8 libwww/5.2.8
+${REFERER}
+${COOKIE}
+w3c528Heads
+
+# text mode browser for Unix
+# http://ei5nazha.yz.yamagata-u.ac.jp/~aito/w3m/
+	'w3m-beta99' => <<'w3mb991027Heads',
+GET ${URI} HTTP/1.0
+User-Agent: w3m/beta-991027
+Accept: text/*, image/*, audio/*, application/*
+Accept-Language: ja; q=1.0, en; q=0.5
+Host: ${HOST}
+${REFERER}
+${COOKIE}
+w3mb991027Heads
+
+# Popular alternative browser for Windows
+	'Opera-3.60' => <<'Opera360Heads',
+GET ${URI} HTTP/1.0
+User-Agent: Mozilla/4.0 (Windows NT 4.0;US) Opera 3.60  [en]
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/png, */*
+Host: ${HOST}
+${REFERER}
+${COOKIE}
+Opera360Heads
+
+	'Linux-Opera-6.11' => <<'LinOpera611Heads',
+GET ${URI} HTTP/1.1
+User-Agent: Mozilla/4.0 (compatible; MSIE 5.0; Linux 2.4.2-2 i686) Opera 6.11  [en]
+Host: ${HOST}
+Accept: text/html, image/png, image/jpeg, image/gif, image/x-xbitmap, */*
+Accept-Charset: windows-1252, utf-8;q=1.0, utf-16;q=1.0, iso-8859-1;q=0.6, *;q=0.1
+Accept-Encoding: deflate, gzip, x-gzip, identity, *;q=0
+Connection: Keep-Alive
+${REFERER}
+${COOKIE}
+LinOpera611Heads
+
+	'Windows-Opera-7beta' => <<'WinOpera7Heads',
+GET ${URI} HTTP/1.1
+User-Agent: Mozilla/4.0 (compatible; MSIE 6.0; MSIE 5.5; Windows NT 4.0) Opera 7.0  [en]
+Host: ${HOST}
+Accept: text/html, image/png, image/jpeg, image/gif, image/x-xbitmap, */*;q=0.1
+Accept-Language: en
+Accept-Charset: windows-1252, utf-8, utf-16, iso-8859-1;q=0.6, *;q=0.1
+Accept-Encoding: deflate, gzip, x-gzip, identity, *;q=0
+Connection: Keep-Alive
+${REFERER}
+${COOKIE}
+WinOpera7Heads
+
+# ab, the apache benchmark tool.
+	'ApacheBench-1.3' => <<'AB13Heads',
+GET ${URI} HTTP/1.0
+User-Agent: ApacheBench/1.3
+Host: ${HOST}
+Accept: */*
+${REFERER}
+${COOKIE}
+AB13Heads
+
+# Amaya is the w3c's combination browser page editor.
+	'Amaya-8.1' => <<'Amaya81Heads',
+GET ${URI} HTTP/1.1
+Accept-Encoding: *,gzip
+TE: trailers,deflate
+Host: ${HOST}
+User-Agent: amaya/8.1a libwww/5.4.0
+Connection: TE,Keep-Alive
+Accept: */*;q=0.1,image/svg+xml,application/mathml+xml,application/xhtml+xml
+${REFERER}
+${COOKIE}
+Amaya81Heads
+
+# OpenOffice can edit HTML pages. It proceeds the GET with a PROPFIND,
+# however, so this doesn't truely emulate it.
+	'OpenOffice-1.0.0' => <<'OO100Heads',
+GET ${URI} HTTP/1.1
+Connection: TE
+TE: trailers
+Host: ${HOST}
+OO100Heads
+
+# Mosaic -- the one that started the rush
+	'Linux-Mosaic-2.6' => <<'LinMosaic26Heads',
+GET ${URI} HTTP/1.0
+Accept: image/x-pjpeg
+Accept: text/plain
+Accept: application/x-html
+Accept: application/html
+Accept: text/x-html
+Accept: text/html
+Accept: application/vnd.sun.xml.writer
+Accept: application/vnd.sun.xml.writer.global
+Accept: application/vnd.stardivision.writer
+Accept: application/vnd.stardivision.writer-global
+Accept: application/x-starwriter
+Accept: application/vnd.sun.xml.writer.template
+Accept: application/vnd.sun.xml.calc
+Accept: application/vnd.stardivision.calc
+Accept: application/x-starcalc
+Accept: application/vnd.sun.xml.calc.template
+Accept: application/vnd.sun.xml.impress
+Accept: application/vnd.stardivision.impress
+Accept: application/vnd.stardivision.impress-packed
+Accept: application/x-starimpress
+Accept: application/vnd.sun.xml.impress.template
+Accept: application/vnd.sun.xml.draw
+Accept: application/vnd.stardivision.draw
+Accept: application/x-stardraw
+Accept: application/vnd.sun.xml.draw.template
+Accept: application/vnd.sun.xml.math
+Accept: application/vnd.stardivision.math
+Accept: application/x-starmath
+Accept: text/html
+Accept: image/x-xwindowdump
+Accept: audio/basic
+Accept: audio/x-aiff
+Accept: image/gif
+Accept: image/jpeg
+Accept: image/tiff
+Accept: image/x-portable-anymap
+Accept: image/x-portable-bitmap
+Accept: image/x-portable-graymap
+Accept: image/x-portable-pixmap
+Accept: image/x-rgb
+Accept: image/rgb
+Accept: image/x-xbitmap
+Accept: image/x-xpixmap
+Accept: image/xwd
+Accept: image/x-xwd
+Accept: image/x-xwindowdump
+Accept: video/mpeg
+Accept: application/postscript
+Accept: application/x-dvi
+Accept: message/rfc822
+Accept: application/x-latex
+Accept: application/x-tex
+Accept: application/x-texinfo
+Accept: application/x-troff
+Accept: application/x-troff-man
+Accept: application/x-troff-me
+Accept: application/x-troff-ms
+Accept: text/richtext
+Accept: text/tab-separated-values
+Accept: text/x-setext
+Accept: */*
+User-Agent:  NCSA_Mosaic/2.6 (X11;Linux 2.4.2-2 i686)  libwww/2.12 modified
+${REFERER}
+${COOKIE}
+LinMosaic26Heads
+
+# The name 'Chimera' has been used by two different browsers. This is the
+# X11 Chimera developed at the University of Las Vegas, not the Mac Mozilla
+# derivative Chimera.
+	'X11-Chimera-1.70' => <<'XChimera170',
+GET ${URI} HTTP/1.0
+Host: ${HOST}
+User-Agent: Chimera/1.70
+Accept: */*
+${REFERER}
+${COOKIE}
+XChimera170
+
+# curl is a command line URL upload/download tool. It can make either
+# HTTP/1.1 (default) requests or HTTP/1.0 (when asked) requests.
+	'NetBSD-curl-7.10.4-HTTP1.1' => <<'Curl7104H11',
+GET ${URI} HTTP/1.1
+User-Agent: curl/7.10.4 (i386-unknown-netbsdelf1.5.2) libcurl/7.10.5 OpenSSL/0.9.6i zlib/1.1.4
+Host: ${HOST}
+Pragma: no-cache
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, */*
+${REFERER}
+${COOKIE}
+Curl7104H11
+
+	'NetBSD-curl-7.10.4-HTTP1.0' => <<'Curl7104H10',
+GET ${URI} HTTP/1.0
+User-Agent: curl/7.10.4 (i386-unknown-netbsdelf1.5.2) libcurl/7.10.5 OpenSSL/0.9.6i zlib/1.1.4
+Host: ${HOST}
+Pragma: no-cache
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, */*
+${REFERER}
+${COOKIE}
+Curl7104H10
+
+# Qweb was an early style-sheet capable browser. Too bad it didn't do
+# javascript (needed for some stylesheets) or even Host: headers.
+	'Qweb-1.3' => <<'QWeb13Heads',
+GET ${URI} HTTP/1.0
+User-Agent: QWeb/1.3
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, */*
+${REFERER}
+${COOKIE}
+QWeb13Heads
+
+# Lib WWW Perl module
+	'lwp-request-1.38' => <<'LWP138Heads',
+GET ${URI} HTTP/1.0
+Host: ${HOST}
+User-Agent: lwp-request/1.38
+${REFERER}
+${COOKIE}
+LWP138Heads
+
+# wget bulk downloader
+	'wget-1.6' => <<'Wget16Heads',
+GET / HTTP/1.0
+User-Agent: Wget/1.6
+Host: localhost:8181
+Accept: */*
+Wget16Heads
+
+# Junkbuster proxy; the proxy does a bunch of header editing, and
+# thus the actual headers can vary considerably from this. Consider
+# it a 'representational' version.
+	'junkbuster-2' => <<'JB2Heads',
+GET / HTTP/1.0
+User-Agent: Mozilla/3.01Gold (Macintosh; I; 68K)
+Host: ${HOST}
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, image/png, */*
+Accept-Encoding: gzip
+Accept-Language: en
+Accept-Charset: iso-8859-1,*,utf-8
+${REFERER}
+${COOKIE}
+JB2Heads
+
+# Popular alternative browser for Macs
+	'iCab-pre1.7' => <<'iCabP17Heads',
+GET ${URI} HTTP/1.0
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, image/xbm, image/png, */*
+Accept-Language: iw
+Host: ${HOST}
+User-Agent: iCab/Pre1.7 (Macintosh; I; PPC)
+${REFERER}
+${COOKIE}
+iCabP17Heads
+
+# Popular text mode browser, predominately unix
+	'Lynx-2.8.1' => <<'Lynx281Heads',
+GET ${URI} HTTP/1.0
+Host: ${HOST}
+Accept: text/html, text/plain, application/applefile, application/x-metamail-patch, sun-deskset-message, mail-file, default, postscript-file, audio-file, x-sun-attachment, text/enriched, text/richtext, application/andrew-inset, x-be2
+Accept: application/postscript, message/external-body, message/partial, application/pgp, application/pgp, video/mpeg, video/*, image/*, audio/mod, text/sgml, video/mpeg, image/jpeg, image/tiff, image/x-rgb, image/png, image/x-xbitmap, image/x-xbm
+Accept: image/gif, application/postscript, video/mpeg, image/jpeg, image/x-tiff, image/x-rgb, image/x-xbm, image/gif, application/postscript, */*;q=0.01
+Accept-Encoding: gzip, compress
+Accept-Language: en
+Negotiate: trans
+User-Agent: Lynx/2.8.1rel.2 libwww-FM/2.14
+${REFERER}
+${COOKIE}
+Lynx281Heads
+
+# Explorer 5.0 can be installed with a compatibility mode that emulates
+# (or claims to emaulate) Explorer 4.0.
+	'WindowsNT-Explorer-5.0-as-4.0' => <<'WinNTExp50-40Heads',
+GET ${URI} HTTP/1.0
+Accept: */*
+Accept-Language: en-us
+Accept-Encoding: gzip, deflate
+User-Agent: Mozilla/4.0 (compatible; MSIE 4.01; Windows NT; compat; DigExt)
+Host: ${HOST}
+${REFERER}
+${COOKIE}
+WinNTExp50-40Heads
+
+	'Windows98-Explorer-5.5' => <<'Win98Exp55Heads',
+GET ${URI} HTTP/1.0
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, */*
+Accept-Language: en-us
+Accept-Encoding: gzip, deflate
+User-Agent: Mozilla/4.0 (compatible; MSIE 5.5; Windows 98)
+Host: ${HOST}
+${REFERER}
+${COOKIE}
+Win98Exp55Heads
+
+# This is on a system with IE5.5 installed, note the reference to
+# IE4.01. This one is hard to do right, since in my tests I saw
+# two requests for the test file. The first came with this UA,
+# the second had this instead:
+# User-Agent: Mozilla/4.0 (compatible; MSIE 4.01; MSIECrawler; Windows NT)
+# The crawler version had an 'Accept-Language: us-en' as well as a
+# different order to the headers (Accept: User-Agent:, Accept-Language:
+# Accept-Encoding, Host:).
+	'WindowsNT-ActiveDesktop' => <<'WinActDeskHeads',
+GET ${URI} HTTP/1.0
+Accept: */*
+Accept-Encoding: gzip, deflate
+User-Agent: Mozilla/4.0 (compatible; MSIE 4.01; Windows NT)
+Host: ${HOST}
+${REFERER}
+${COOKIE}
+WinActDeskHeads
+
+	'WindowsNT-Netscape6' => <<'WinNTNS6Heads',
+GET ${URI} HTTP/1.0
+Host: ${HOST}
+User-Agent: Mozilla/5.0 (Windows; U; WinNT4.0; en-US; m18) Gecko/20001108 Netscape6/6.0
+Accept: */*
+Accept-Language: en
+Accept-Encoding: gzip,deflate,compress,identity
+${REFERER}
+${COOKIE}
+WinNTNS6Heads
+
+	'WindowsNT-Explorer-5.5' => <<'WinNTExp55Heads',
+GET ${URI} HTTP/1.0
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, */*
+Accept-Language: en-us
+Accept-Encoding: gzip, deflate
+User-Agent: Mozilla/4.0 (compatible; MSIE 5.5; Windows NT 4.0)
+Host: ${HOST}
+${REFERER}
+${COOKIE}
+WinNTExp55Heads
+
+	'Windows98-Explorer-4.0' => <<'Win98Exp40Heads',
+GET ${URI} HTTP/1.0
+Accept: */*
+Accept-Language: en-us
+Accept-Encoding: gzip, deflate
+User-Agent: Mozilla/4.0 (compatible; MSIE 4.01; Windows 98)
+Host: ${HOST}
+${REFERER}
+${COOKIE}
+Win98Exp40Heads
+
+# Normal mode Windows NT IE 5.0
+	'WindowsNT-Explorer-5.0' => <<'WinNTExp50Heads',
+GET ${URI} HTTP/1.0
+Accept: */*
+Accept-Language: en-us
+Accept-Encoding: gzip, deflate
+User-Agent: Mozilla/4.0 (compatible; MSIE 5.0; Windows NT; DigExt)
+Host: ${HOST}
+Pragma: no-cache
+${REFERER}
+${COOKIE}
+WinNTExp50Heads
+
+# IE can optional crawl pages to cache them for offline browsing.
+# This is Windows NT IE 5.01 in crawl mode.
+	'WindowsNT-ExplorerOffline-5.0' => <<'WinNTExpOff50Heads',
+GET ${URI} HTTP/1.0
+Accept: */*
+Accept-Language: en-us
+Accept-Encoding: gzip, deflate
+User-Agent: Mozilla/4.0 (compatible; MSIE 5.01; Windows NT; MSIECrawler)
+Host: ${HOST}
+Pragma: no-cache
+${REFERER}
+${COOKIE}
+WinNTExpOff50Heads
+
+	'WindowsNT-Netscape-4.6' => <<'WinNTNS46Heads',
+GET ${URI} HTTP/1.0
+User-Agent: Mozilla/4.6 [en] (WinNT; I)
+Pragma: no-cache
+Host: ${HOST}
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, image/png, */*
+Accept-Encoding: gzip
+Accept-Language: en
+Accept-Charset: iso-8859-1,*,utf-8
+${REFERER}
+${COOKIE}
+WinNTNS46Heads
+
+	'MacPPC-Explorer-4.0' => <<'MacPPCExp40Heads',
+GET ${URI} HTTP/1.0
+Host: ${HOST}
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, image/xbm, image/x-jg, */*
+Accept-Language: en
+If-Modified-Since: Fri, 01 Oct 1999 00:25:43 GMT
+User-Agent: Mozilla/4.0 (compatible; MSIE 4.01; Mac_PowerPC)
+UA-OS: MacOS
+UA-CPU: PPC
+Extension: Security/Remote-Passphrase
+${REFERER}
+${COOKIE}
+MacPPCExp40Heads
+
+	'MacPPC-Netscape-4.0' => <<'MacPPCNS40Heads',
+GET ${URI} HTTP/1.0
+Proxy-Connection: Keep-Alive
+User-Agent: Mozilla/4.05 (Macintosh; I; PPC, Nav)
+Pragma: no-cache
+Host: ${HOST}
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, image/png, */*
+Accept-Language: en
+Accept-Charset: iso-8859-1,*,utf-8
+${REFERER}
+${COOKIE}
+MacPPCNS40Heads
+
+	'MacPPC-Netscape-4.6' => <<'MacPPCNS46Heads',
+GET ${URI} HTTP/1.0
+User-Agent: Mozilla/4.6 (Macintosh; I; PPC)
+Pragma: no-cache
+Host: ${HOST}
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, image/png, */*
+Accept-Encoding: gzip
+Accept-Language: en
+Accept-Charset: iso-8859-1,*,utf-8
+${REFERER}
+${COOKIE}
+MacPPCNS46Heads
+
+	'Linux-Netscape-3.0' => <<'LinNS30Heads',
+GET ${URI} HTTP/1.0
+User-Agent: Mozilla/3.0 (X11; I; Linux 2.2.5-15 i686)
+Pragma: no-cache
+Host: ${HOST}
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, */*
+${REFERER}
+${COOKIE}
+LinNS30Heads
+
+	'Linux-Netscape-4.51' => <<'LinNS451Heads',
+GET ${URI} HTTP/1.0
+User-Agent: Mozilla/4.51 [en] (X11; I; Linux 2.2.5-15 i686)
+Host: ${HOST}
+Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, image/png, */*
+Accept-Encoding: gzip
+Accept-Language: en
+Accept-Charset: iso-8859-1,*,utf-8
+${REFERER}
+${COOKIE}
+LinNS451Heads
+
+	'Linux-Mozilla-1.0.0' => <<'LinMz100Heads',
+GET ${URI} HTTP/1.1
+Host: ${HOST}
+User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.0.0) Gecko/20020529
+Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,video/x-mng,image/png,image/jpeg,image/gif;q=0.2,text/css,*/*;q=0.1
+Accept-Language: en, de;q=0.66, ja;q=0.33
+Accept-Encoding: gzip, deflate, compress;q=0.9
+Accept-Charset: ISO-8859-1, utf-8;q=0.66, *;q=0.66
+Keep-Alive: 300
+${REFERER}
+${COOKIE}
+LinMz100Heads
+
+# Phoenix (nee Firebird) is a Mozilla derivative available for Unix,
+# Windows, and Macs
+	'Linux-Phoenix-0.6-beta' => <<'LinPh06Heads',
+GET ${URI} HTTP/1.1
+Host: ${HOST}
+User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.5a) Gecko/20030703 Mozilla Firebird/0.6
+Accept: image/png,image/jpeg,image/gif;q=0.2,*/*;q=0.1
+Accept-Language: en-us,en;q=0.5
+Accept-Encoding: gzip,deflate,compress;q=0.9
+Accept-Charset: ISO-8859-1,utf-8;q=0.7,*;q=0.7
+Keep-Alive: 300
+Connection: keep-alive
+${REFERER}
+${COOKIE}
+LinPh06Heads
+
+# Konqueror is a minor Unix (mostly Linux) graphical browser
+	'Konqueror-2.1.1' => <<'Konq211Heads',
+GET ${URI} HTTP/1.1
+Connection: Keep-Alive
+User-Agent: Mozilla/5.0 (compatible; Konqueror/2.1.1; X11)
+Accept: text/*;q=1.0, image/png;q=1.0, image/jpeg;q=1.0, image/gif;q=1.0, image/*;q=0.8, */*;q=0.5
+Accept-Encoding: x-gzip; q=1.0, gzip; q=1.0, identity
+Accept-Charset: iso-8859-1;q=1.0, *;q=0.9, utf-8;q=0.8
+Accept-Language: en_US, en
+Host: ${HOST}
+${REFERER}
+${COOKIE}
+Konq211Heads
+
+);
+
+sub THEEND {
+  my $signame = (shift or '(unknown)');
+  die "Got SIG$signame ... exiting\n";
+} # &THEEND
+
+sub BUMP {
+  my $signame = (shift or '(unknown)');
+  $nosignal = 0;
+} # end &BUMP 
+
+$SIG{INT}  = 'main::THEEND';
+$SIG{TERM} = 'main::THEEND';
+$SIG{PIPE} = 'main::BUMP';
+
+while(defined($ARGV[0]) and substr($ARGV[0], 0, 1) eq '-') {
+    if (($ARGV[0] eq '-a') or ($ARGV[0] eq '--autoname'))  {
+      $autoname = 1;
+      shift;
+    } elsif (($ARGV[0] eq '-B') or ($ARGV[0] eq '--no-body'))  {
+      $print_body = 0;
+      shift;
+    } elsif (($ARGV[0] eq '-h') or ($ARGV[0] eq '--heads'))  {
+      $print_heads = 1;
+      shift;
+    } elsif (($ARGV[0] eq '-e') or ($ARGV[0] eq '--head'))  {
+      $head_request = 1;
+      shift;
+    } elsif (($ARGV[0] eq '-f') or ($ARGV[0] eq '--follow'))  {
+      $follow = 1;
+      shift;
+    } elsif (($ARGV[0] eq '-l') or ($ARGV[0] eq '--long'))  {
+      $long = 1;
+      shift;
+    } elsif (($ARGV[0] eq '-o') or ($ARGV[0] eq '--out'))  {
+      shift;
+      $outfile = shift;
+      if (!defined($outfile) or ($urlfile =~ /^-/)) {
+	print STDERR "$id: -o (--out) requires an output file\n";
+	usage(2);
+      }
+    } elsif (($ARGV[0] eq '-F') or ($ARGV[0] eq '--file'))  {
+      shift;
+      $urlfile = shift;
+      if (!defined($urlfile) or ($urlfile ne '-' and (! -f $urlfile))) {
+	print STDERR "$id: -F (--file) requires an input file\n";
+	usage(2);
+      }
+      if (!open(URLF, "< $urlfile")) {
+        print STDERR "$id: can't open url file $urlfile: $!\n";
+	exit 1;
+      }
+    } elsif (($ARGV[0] eq '-w') or ($ARGV[0] eq '--wait'))  {
+      shift;
+      $waittime = shift;
+      if (!defined($waittime)) {
+	print STDERR "$id: -w (--wait) requires an integer or integer pair\n";
+	usage(2);
+      } elsif ($waittime =~ /^(\d+),(\d+)$/) {
+	$average   = $1;
+        $deviation = $2;
+	eval 'use Math::Random;';
+	if ($@) { 
+	  warn "$id: Can't use Math::Random: $@\nWill not use random waits.\n";
+	  $waittime = $average;
+	  $average = $deviation = undef;
+	} 
+      } elsif ($waittime !~ /^\d+$/) {
+	print STDERR "$id: -w (--wait) requires an integer or integer pair\n";
+	usage(2);
+      }
+    } elsif (($ARGV[0] eq '-t') or ($ARGV[0] eq '--time'))  {
+      eval 'use Benchmark;';
+      shift;
+      if ($@) { 
+        warn "$id: Can't use Benchmark module: $@\n";
+      } else {
+        $benchmark = shift;
+	if (!defined($benchmark) or $benchmark !~ /^\d+$/) {
+	  print STDERR "$id: -t (--time) requires an integer argument\n";
+	  usage(2);
+	}
+      }
+    } elsif (($ARGV[0] eq '-s') or ($ARGV[0] eq '--status'))  {
+      shift;
+      if (defined($ARGV[0]) and $ARGV[0] =~ /^\d\d\d$/) {
+	$exitunless = shift;
+      } else {
+	print STDERR "$id: -s (--status) requires a HTTP status code number\n";
+	usage(2);
+      }
+    } elsif (($ARGV[0] eq '-r') or ($ARGV[0] eq '--request'))  {
+      $print_request = 1;
+      shift;
+    } elsif (($ARGV[0] eq '-L') or ($ARGV[0] eq '--language'))  {
+      shift;
+      if (defined($ARGV[0]) and substr($ARGV[0], 0, 1) ne '-') {
+	$lang = shift;
+      } else {
+	print STDERR "$id: -L (--language) requires an argument\n";
+	usage(2);
+      }
+    } elsif (($ARGV[0] eq '-H') or ($ARGV[0] eq '--host'))  {
+      shift;
+      if (defined($ARGV[0]) and substr($ARGV[0], 0, 1) ne '-') {
+	$forcehost = shift;
+      } else {
+	print STDERR "$id: -H (--host) requires an argument\n";
+	usage(2);
+      }
+    } elsif (($ARGV[0] eq '-u') or ($ARGV[0] eq '--user'))  {
+      shift;
+      if (defined($ARGV[0]) and substr($ARGV[0], 0, 1) ne '-') {
+	$user = &base64(shift);
+      } else {
+	print STDERR "$id: -u (--user) requires an argument\n";
+	usage(2);
+      }
+    } elsif (($ARGV[0] eq '-P') or ($ARGV[0] eq '--filepost'))  {
+      shift;
+      if (defined($ARGV[0]) and -f $ARGV[0]) {
+	$postfile = shift;
+      } else {
+	print STDERR "$id: -P (--filepost) requires file argument\n";
+	usage(2);
+      }
+      if(open(PD, "< $postfile")) {
+	$post = '';
+        while(<PD>) {
+	  $post .= $_;
+	}
+	close PD;
+	if ($post =~ s/\AContent-Type:[ \t]*(.*)\n//i) {
+	  $contenttype = $1;
+	}
+      } else {
+	print STDERR "$id: -P (--filepost) can't open $postfile: $!\n";
+	usage(2);
+      }
+    } elsif (($ARGV[0] eq '-p') or ($ARGV[0] eq '--post'))  {
+      shift;
+      if (defined($ARGV[0]) and substr($ARGV[0], 0, 1) ne '-') {
+	$post = shift;
+      } else {
+	print STDERR "$id: -p (--post) requires an argument\n";
+	usage(2);
+      }
+    } elsif (($ARGV[0] eq '-R') or ($ARGV[0] eq '--refer'))  {
+      shift;
+      if (defined($ARGV[0]) and substr($ARGV[0], 0, 1) ne '-') {
+	$refer = shift;
+      } else {
+	print STDERR "$id: -R (--refer) requires an argument\n";
+	usage(2);
+      }
+    } elsif (($ARGV[0] eq '-c') or ($ARGV[0] eq '--cookie'))  {
+      shift;
+      if (defined($ARGV[0]) and substr($ARGV[0], 0, 1) ne '-') {
+	$cookie = shift;
+      } else {
+	print STDERR "$id: -c (--cookie) requires an argument\n";
+	usage(2);
+      }
+    } elsif (($ARGV[0] eq '-b') or ($ARGV[0] eq '--browser'))  {
+      shift;
+      if (defined($ARGV[0]) and substr($ARGV[0], 0, 1) ne '-') {
+	$ARGV[0] =~ /([\w.\d-]+)/; shift;
+	$bv = $1;
+	if (!defined($headers{$bv})) {
+	  print STDERR "$id: $bv is not a recognized browser\n";
+	  usage(2);
+	}
+      } else {
+	print STDERR "$id: -b (--browser) requires an argument\n";
+	usage(2);
+      }
+  } elsif ($ARGV[0] eq '--version') {
+    print "$0 version $VERSION $LONG_VERSION_INFO\n";
+    exit(0);
+  } elsif ($ARGV[0] eq '--emulations') {
+    &usage_emulations();
+    exit(0);
+  } elsif ($ARGV[0] eq '--languages') {
+    &usage_languages();
+    exit(0);
+  } elsif ($ARGV[0] eq '--help') {
+    &usage(0);
+  } else {
+    print STDERR "$0: $ARGV[0] not a recognized option\n";
+    &usage(2);
+  }
+}
+
+
+if (!defined($ARGV[0]) and !defined($urlfile)) {
+  print STDERR "No URL found\n";
+  usage(2);
+}
+
+if ($benchmark) {
+  timethis($benchmark, 
+    sub {
+      if (defined($urlfile)) {
+	while(defined($url = <URLF>)) {
+	  if($url =~ m,(\S+)\s+(https?:/.*),i) {
+	    $refer = $1;
+	    $url = $2;
+	  }
+	  if($url =~ m,(\S+)\s+(\S+),) {
+	    $url = $1;
+	    $outfile = $2;
+	  }
+	  &do_one($url, 1);
+	}
+      } else {
+	for $url (@ARGV) {
+	  &do_one($url, 1);
+	}
+      }
+    }
+  );
+  close URLF;
+} else {
+  my $sleep;
+
+  # Normal loop through them.
+  if (defined($urlfile)) {
+    while(defined($url = <URLF>)) {
+      sleep $sleep if $sleep;
+      if($url =~ m,(\S+)\s+(https?:/.*),i) {
+	$refer = $1;
+	$url = $2;
+      }
+      if($url =~ m,(\S+)\s+(\S+),) {
+	$url = $1;
+	$outfile = $2;
+      }
+      &do_one($url, 0);
+
+      if (defined($average)) {
+	$sleep = Math::Random::random_normal(1, $average, $deviation);
+      } else {
+	$sleep = $waittime;
+      }
+    }
+    close URLF;
+  } else {
+    while(defined($url = shift)) {
+      sleep $sleep if $sleep;
+      &do_one($url, 0);
+
+      if (defined($average)) {
+	$sleep = Math::Random::random_normal(1, $average, $deviation);
+      } else {
+	$sleep = $waittime;
+      }
+    }
+  }
+
+}
+exit(0);
+
+#####################################################
+# Process one URL from the command line. If $timing is set,
+# don't optimize away the actual request.
+# (Warning: This function uses globals.)
+sub do_one ($$) {
+  my $url = shift;
+  my $timing = shift;
+  my $nport = 80;
+  my $host;
+  my $connecthost;
+  my $proto;
+  my $lpart = '/';
+  my $header = $headers{$bv} . $EOL;
+  my $ans;	# holds response from web server
+  my $newreq;
+
+  # Simple-mindedly parse the request
+
+  if ($url !~ m%(https?):/+([^/]+)(/.+)?%) {
+    warn("Can't get host for $url; skipping\n");
+    return undef;
+  } else {
+    $proto = $1;
+    $host = $2;
+    $lpart = $3 if defined($3);
+  }
+
+  if ($autoname) {
+    my $out = $lpart;
+
+    $out =~ s:.*/::;
+    if (length($out) < 1) {
+      $out = $dirdefault;
+    }
+
+    if (open(STDOUT,">$out")) {
+      print STDERR "Sending output going to $out\n";
+    } else {
+      warn "Can't open $out for output.\n";
+    }
+  } elsif($outfile) {
+    if(open(STDOUT,">>$outfile")) {
+      print STDERR "Sending output going to $outfile\n";
+    } else {
+      warn "Can't open $outfile for output.\n";
+    }
+  }
+
+  if (defined($forcehost)) {
+    $connecthost = $forcehost;
+  } else {
+    $connecthost = $host;
+  }
+
+  # Do referer headers, etc.
+  if ($long) { 
+    $header =~ s#\${URI}#$proto://${host}$lpart#g;
+  } else {
+    $header =~ s/\${URI}/$lpart/g;
+  }
+  $header =~ s/\${HOST}/$host/g;
+  $header =~ s/\${REFERER}/Referer: $refer/g;
+  $header =~ s/\${COOKIE}/Cookie: $cookie/g;
+
+  if ($lang) {
+    $header =~ s/Accept-Language:[^\cm\cj]*\cm?\cj/Accept-Language: $lang$EOL/i;
+  }
+
+  if ($user) {
+    $header =~ s/\cm?\cj\cm?\cj/${EOL}Authorization: Basic $user$EOL/;
+  }
+
+  if ($post) {
+    my $size = length($post);
+
+    $header =~ s/^GET/POST/;
+    $header =~ s/\cm?\cj\cm?\cj/${EOL}Content-Type: $contenttype${EOL}Content-Length: $size$EOL$EOL/;
+    $header .= $post;
+  } elsif ($head_request) {
+    $header =~ s/^GET/HEAD/;
+  }
+
+  $header =~ s/\cm?\cj/$EOL/g;
+
+  # Grab first line for &grab
+  $header =~ s/^([^\cm\cj]+$EOL)//;
+  $newreq = $1;
+
+  # Delete empty headers
+  $header =~ s/\cM?\cJ([^\s:]+):\s(?=\cM?\cJ)//g;
+
+  # Log the request
+  print "$newreq$header" if $print_request;
+  print "\n"             if($print_request and $post);
+
+  if (!($print_heads or $print_body) and !$timing) {
+    return "$newreq$header";
+  }
+
+  # Strip :port off of host before the grab. (It needs to be left in above
+  # for the Host: header to work right.)
+  if ($connecthost =~ s/:(\d+)//) {
+    $nport = $1;
+  }
+
+  # Fetch the page
+  $ans = &grab($connecthost, $nport, 
+	       \$newreq, \$header, 
+	       $print_heads, $print_body, $timing, $follow, $exitunless);
+} # end &do_one  
+
+
+#####################################################
+# Grab an html page. Needs a remote hostname, a port number
+# a first line request (eg "GET / HTTP/1.0"), and the remainder
+# of the request (empty string if HTTP/0.9).
+# This function should use only these globals:
+#	$nosignal	also used in signal handler
+sub grab ($$$$$$$$$) {
+  my ($remote, $port, $request, $heads, $printhead, $printbody, $no_optimize,
+      $doredir, $eul) = @_;
+  my ($iaddr, $paddr, $line);
+  my $out = '';
+  my $len;
+  my $sc;
+  my $rc;
+
+  if (!($iaddr = inet_aton($remote))) { 
+    $out = &err444("no host: $remote", $printhead, $printbody);
+    if ($eul && $eul != $INTERNAL_ERROR_CODE) {
+      print STDERR "Got status $INTERNAL_ERROR_CODE, exiting.\n";
+      exit(3);
+    }
+    return($out);
+  }
+
+  $paddr   = sockaddr_in($port, $iaddr);
+
+  print 'Peer is ' .  inet_ntoa($iaddr) . ":$port\n" if $debug;
+
+  if (!socket(SOCK, PF_INET, SOCK_STREAM, $tcpproto)) {
+    $out = &err444("socket: $!", $printhead, $printbody);
+    if ($eul && $eul != $INTERNAL_ERROR_CODE) {
+      print STDERR "Got status $INTERNAL_ERROR_CODE, exiting.\n";
+      exit(3);
+    }
+    return($out);
+  }
+  if (!connect(SOCK, $paddr)) {
+    $out = &err444("connect: $!", $printhead, $printbody);
+    if ($eul && $eul != $INTERNAL_ERROR_CODE) {
+      print STDERR "Got status $INTERNAL_ERROR_CODE, exiting.\n";
+      exit(3);
+    }
+    return($out);
+  }
+
+  $len = length($$request);
+  $rc = syswrite(SOCK, $$request, $len);
+
+  if ($rc != $len) {
+    warn("request write to $remote was short ($rc != $len)\n");
+
+  } else {
+    $len = length($$heads);
+    $rc = syswrite(SOCK, $$heads, $len);
+
+    warn("heads write to $remote was short ($rc != $len)\n")
+    	if ($rc != length($$heads));
+  }
+
+  $nosignal = 1;
+
+  while ($line = &saferead() and $nosignal) {
+    $out .= $line;
+    last if ($line =~ /^\015?\012?$/);
+  }
+
+  print $out if $printhead;
+
+  if ($eul) {
+    if ($out =~ m:^http/\d+\.\d+ \s+ (\d\d\d):xi) {
+      $sc = $1;
+    } else {
+      $sc = $INTERNAL_ERROR_CODE;
+    }
+  }
+  if (!$printbody and !$no_optimize) {
+    close (SOCK)            || die "close: $!";
+    if ($doredir) {
+      if ($out =~ /(?:\015?\012|015\012?)Location:[ \t]*([^\015\012]+)/i) {
+        my $newurl = $1;
+	print STDERR "Following redirection to $newurl\n";
+	$out = &do_one($newurl, 0);
+      }
+    }
+    if ($eul and $eul != $sc) {
+      print STDERR "Got status $sc, exiting.\n";
+      exit(3);
+    }
+    return $out;
+  }
+
+  if ($out =~ /\nContent-Length:\s+(\d+)/) {
+    # OLD store every way : read(SOCK,$out,$1,length($out));
+    my $tograb = $1;
+    my $chunk  = 512;	# not too large, since it is off the network
+    my $total  = 0;
+    my $buf;
+    my $rc;
+
+    if ($autoname || $outfile) {
+      print STDERR "Expecting: $tograb bytes\n";
+    }
+    while($tograb >= $chunk) {
+      $buf = '';
+      $rc = read(SOCK,$buf,$chunk,0);
+      print $buf if $printbody;
+      $total += $rc;
+      if ($rc != $chunk) {
+	if($head_request and $rc == 0) {
+	  # If it is a head request, and we legitimately get no body,
+	  # then we still don't want to return, because we may have
+	  # a redirect to follow.
+	  $tograb = 0;
+	} elsif (($head_request and $rc !=0) or (!$head_request)) {
+	  warn "Return from $remote read was short (got $rc of $chunk; ".
+		  "$total total)\n";
+	  return $out;
+	}
+      }
+
+      $tograb -= $chunk;
+    }
+
+    if ($tograb > 0) {
+      $buf = '';
+      $rc = read(SOCK,$buf,$tograb,0);
+      print $buf if $printbody;
+      $total += $rc;
+      if ($rc != $tograb) {
+	if($head_request and $rc == 0) {
+	  $tograb = 0;
+	} elsif (($head_request and $rc !=0) or (!$head_request)) {
+	  warn "Return from $remote read was short (got $rc of $tograb; ".
+		"$total total)\n";
+	  return $out;
+	}
+      }
+    }
+
+  } else {
+
+    $nosignal = 1;
+    # Back to line by line mode.
+    while (defined($line = <SOCK>) and $nosignal) {
+      # OLD store every way : $out .= $line;
+      print $line if $printbody;
+    }
+  }
+
+  close (SOCK)            || die "close: $!";
+
+  if ($doredir) {
+    if ($out =~ /(?:\015?\012|015\012?)Location:[ \t]*([^\015\012]+)/i) {
+      my $newurl = $1;
+      print STDERR "Following redirection to $newurl\n";
+      $out = &do_one($newurl, 0);
+    }
+  }
+  
+  if($eul and $eul != $sc) {
+    print STDERR "Got status $sc, exiting.\n";
+    exit(3);
+  }
+  return $out;
+} # end &grab
+
+#####################################################
+# Attempt to read a line safely from SOCK filehandle.
+sub saferead () {
+  my $line;
+  eval {
+  	local$SIG{ALRM} = sub { die 'timeout!' };
+	alarm 15;
+	$line = <SOCK>;
+	alarm 0;
+       };
+  if ($@ and $@ !~ /timeout!/) {warn("during socket read: $@\n")}
+  return $line;
+} # end &saferead 
+
+#####################################################
+# Print a usage message. Exits with the number passed in.
+sub usage ($) {
+  my $exit = shift;
+
+  if($exit == 2) {
+    print "$0: Use 'bget --help' for usage\n";
+    exit $exit;
+  }
+
+  print <<"EndUsage";
+$0 usage:
+  bget [options] [URL...]
+
+Basic tool to make HTTP GET requests and monitor the results.
+Unlike LWP GET, it does not require special Perl modules, and
+by virtue of being cruder makes HTTP headers easier to spy on.
+Only URLs of the forms 
+
+     http://hostname/[localpart]
+     http://hostname:port/[localpart]
+
+are supported.
+
+Options:
+  	-a --autoname		save output automatically based on URI
+  	-B --no-body		don't print the body of the response
+	-f --follow		follow redirects
+	-h --heads		print the response headers
+	-e --head 		make a HEAD request instead of a GET
+	-l --long		use long address on GET line (using the
+				full http://... should work in HTTP/1.1)
+	-r --request		print the request headers
+	-F --file     FILE	read URLs from FILE
+	-H --host     HOST[:P] 	connect to HOST for request (useful for
+				testing virtual hosts before a DNS change)
+	-L --language LANG	use LANG for Accept-Language:
+	-R --refer    VALUE	set the referer header with VALUE
+	-c --cookie   VALUE	set the cookie header with VALUE
+	-b --browser  NAME	what browser to emulate
+	-o --out      FILE	save output to FILE
+	-p --post     STRING	use STRING as a POST form contents (forms of
+				type application/x-www-form-urlencoded only)
+	-P --filepost FILE	FILE contains post data; if the first line
+				is "Content-Type: foo/bar" will set mime type
+	-s --status   CODE	exit unless HTTP status is CODE
+	-t --time     N		use Benchmark module to time making
+				request(s) N times
+	-u --user     USER:PW	basic authentification as USER:PW
+	-w --wait     N		wait N seconds between fetching each URL
+	-w --wait     A,D	wait average A seconds, std deviation D
+
+	--help                  show this help and exit
+	--version               print version and exit
+	--emulations            print list of available emulations
+	--languages             print a sample of language codes
+
+Note: If -H (--host) is used with multiple URLs, all connections are
+      made to the specified HOST (and port) even if different hosts
+      are used in the URLs. This can be used to fetch files through
+      a HTTP proxy if -l (--long) is also used.
+
+      With -L (--langauge) the Accept-Language: header will not be
+      added if the browser has not been observed to use it.
+
+      If two URLs are on a line in a -F (--file) URL file, the first is
+      used as a referer, until the next two URL line. An outfile can
+      be specified in a -F (--file) URL file, if it is after the URL
+      to fetch and doesn't begin with "http:/" or "https:/"
+EndUsage
+
+  exit($exit);
+} # end &usage 
+
+sub usage_languages() {
+  print <<'LanguageRef';
+In HTTP standard languages have a two letter code, with an optional
+two letter country code qualifier. English is 'en', but American
+English is 'en-us', Irish English is 'en-ie', Australian English is
+'en-au'.
+
+Some other lanuages:
+  af	Afrikaans
+  sq	Albanian
+  eu	Basque
+  bg	Bulgarian
+  be	Byelorussian
+  ca	Catalan
+  zh	Chinese
+  zh-cn	Chinese/China
+  zh-tw	Chinese/Taiwan
+  hr	Croatian
+  cs	Czech
+  da	Danish
+  nl	Dutch
+  nl-be	Dutch/Belgium
+  fo	Faeroese
+  fi	Finnish
+  fr	French
+  fr-be	French/Belgium
+  fr-ca	French/Canada
+  fr-fr	French/France
+  fr-ch	French/Switzerland
+  gl	Galician
+  de	German
+  de-at	German/Austria
+  de-de	German/Germany
+  de-ch	German/Switzerland
+  el	Greek
+  hu	Hungarian
+  is	Icelandic
+  id	Indonesian
+  ga	Irish
+  it	Italian
+  ja	Japanese
+  ko	Korean
+  mk	Macedonian
+  no	Norwegian
+  pl	Polish
+  pt	Portuguese
+  pt-br	Portuguese/Brazil
+  ro	Romanian
+  ru	Russian
+  gd	Scots Gaelic
+  sr	Serbian
+  sk	Slovak
+  sl	Slovenian
+  es	Spanish
+  es-ar	Spanish/Argentina
+  es-co	Spanish/Colombia
+  ex-mx	Spanish/Mexico
+  es-es	Spanish/Spain
+  sv	Swedish
+  tr	Turkish
+  uk	Ukrainian
+
+This list is from the default set of lanuages in Netscape 4.5.
+IE has a different set, including more country variations. Multiple
+languages are comma seperated, a preference quality can be appended.
+A star means accept any. Technically specifying a variant without
+a star or the base language means only accept the variant, not the
+generic. IE encourages this broken request type, however.
+
+Example: "en; q=1.0, de; q=0.7, it; q=0.5, fr; q=0.2, *; q=0.1"
+
+
+LanguageRef
+}
+
+sub usage_emulations() {
+  my $key;
+  my @keys = sort {lc($a) cmp lc($b)} keys %headers;
+  my $k = scalar @keys;
+
+  print "The following $k browsers are recognized for header emulation:\n";
+  foreach $key (@keys) {
+    print "\t$key\n" if length($headers{$key});
+  }
+
+}
+
+#####################################################
+# For managing cookies, a monster.
+sub monster ($$) {
+  my $host = shift;
+  my $reqref = shift;
+
+  return unless defined($$reqref) and length($$reqref);
+  if ($host =~ /\.doubleclick\./) {
+    $$reqref =~ s/\cjCookie:[^\cm\cj]*/\cjX-Monster: doubleclick cookie eaten/gi;
+  } elsif ($host =~ /^(ads|adforce|adserv[er]*)\./i) {
+    $$reqref =~ s/\cjCookie:[^\cm\cj]*/\cjX-Monster: $1.* host cookie eaten/gi;
+  }
+
+} # end &monster 
+
+sub err444 ($$$) {
+  my $why = shift;
+  my ($phead, $pbody) = @_;
+
+  my $return;
+($return = <<"444ErrorHead") =~ s/\cj/\cm\cj/g;
+HTTP/1.0 $INTERNAL_ERROR_CODE Not Found
+X-Declined: $why
+Content-Type: text/html
+Content-Length: 28
+
+444ErrorHead
+
+  my $body;
+$body = <<"444ErrorBody";
+<html><head><title>Error $INTERNAL_ERROR_CODE</title></head><body>
+<h1>Error $INTERNAL_ERROR_CODE Not Found</h1>
+<p>$why</p>
+</body></html>
+444ErrorBody
+
+  print $return if $phead;
+  print $body   if $pbody;
+
+  return($return);
+} # end &err444
+
+# This code stolen from MIME::Base64's perl-only backup. The XS
+# version is much faster, but I don't want to assume it is installed.
+sub base64 ($) {
+    my $res = "";
+    my $eol = "\n";
+    pos($_[0]) = 0;                          # ensure start at the beginning
+    while ($_[0] =~ /(.{1,45})/gs) {
+        $res .= substr(pack('u', $1), 1);
+        chop($res);
+    }
+    $res =~ tr|` -_|AA-Za-z0-9+/|;               # `# help emacs
+    # fix padding at the end
+    my $padding = (3 - length($_[0]) % 3) % 3;
+    $res =~ s/.{$padding}$/'=' x $padding/e if $padding;
+    # break encoded string into lines of no more than 76 characters each
+    if (length $eol) {
+        $res =~ s/(.{1,76})/$1$eol/g;
+    }
+    $res;
+} # end &base64 
+
+__END__
+Benchmarking:
+$ bget -t 1000 -B http://localhost/
+timethis 1000: 53 wallclock secs (17.52 usr +  1.44 sys = 18.96 CPU) @ 52.74/s (n=1000)
+$ /tmp/lwp-bm http://localhost/
+timethis 1000: 52 wallclock secs (14.66 usr +  1.77 sys = 16.43 CPU) @ 60.86/s (n=1000)
+$ cat /tmp/lwp-bm
+#!/usr/bin/perl -w
+
+use LWP::UserAgent; 
+use HTTP::Request; 
+use HTTP::Response; 
+use Benchmark;
+
+my $raw_url = shift or die "usage: $0 url\n"; 
+my $url = $raw_url; #URI::Heuristic::uf_urlstr($raw_url);
+$| = 1;                                  
+my $ua = LWP::UserAgent->new(); 
+
+timethis(1000, sub {
+my $req = HTTP::Request->new(GET => $url); 
+
+my $response = $ua->request($req);
+});
+$
+
+
+From: helgi@NOSPAMdecode.is (Helgi Briem)
+Newsgroups: comp.lang.perl.misc
+Subject: Re: Faster than LWP
+Date: Wed, 13 Dec 2000 16:50:39 GMT
+Reply-To: helgi@NOSPAMdecode.is
+Message-ID: <3a37a450.537807185@news.itn.is>
+References: <m2aea1ygmh.fsf@rt158.private.realtime.co.uk>
+	<28424-3A36E39B-22@storefull-247.iap.bryant.webtv.net>
+
+[...]
+Using LWP is easy and lightning fast.  Your problem almost 
+[...]
+This code, slightly modified from the Perl Cookbook works 
+for me every day and is lightning fast for either ftp or 
+http, substitute your own proxy server and port number.:
+
+Regards,
+Helgi Briem
+
+#!/usr/bin/perl -w 
+
+use LWP::UserAgent; 
+use HTTP::Request; 
+use HTTP::Response; 
+use URI::Heuristic;
+
+my $raw_url = shift or die "usage: $0 url\n"; 
+my $url = URI::Heuristic::uf_urlstr($raw_url);
+$| = 1;                                  
+printf "%s =>\n\t", $url;
+my $ua = LWP::UserAgent->new(); 
+$ua->proxy(['http', 'ftp'] =>
+'http://MYPROXY.DOMAIN.COM:80');
+
+my $req = HTTP::Request->new(GET => $url); 
+
+my $response = $ua->request($req);
+if ($response->is_error()) {
+     printf " %s\n", $response->status_line;
+ } else {
+     my $count;
+     my $bytes;
+     my $content = $response->content();
+     $bytes = length $content;
+     $count = ($content =~ tr/\n/\n/);
+     printf "%s (%d lines, %d bytes)\n", $response->content;
+} 
+
+
+=pod
+
+=head1 NAME
+
+bget - basic HTTP get tool
+
+=head1 DESCRIPTION
+
+Basic tool to make HTTP GET requests and monitor the results.
+Unlike LWP GET, it does not require special Perl modules, and
+by virtue of being cruder makes HTTP headers easier to spy on.
+
+Only URLs of the forms 
+
+     http://hostname/[localpart]
+     http://hostname:port/[localpart]
+
+are supported.
+
+Options:
+
+=over 4
+
+=item *
+
+-a --autoname	
+
+Save output automatically based on URI. Will not warn if the
+file already exists. This overrides the -o (--out) option.
+The prefered output name is everything after the last / in
+the URL, or 'dir-default' if the URL ends with a /.
+
+=item *
+
+-B --no-body	
+
+Don't print the body of the response.
+
+=item *
+
+-b --browser  NAME
+
+What browser to emulate. Use I<--emulations> to list
+available browser headers.
+
+=item *
+
+-c --cookie   VALUE
+
+Set the cookie header with VALUE.
+
+=item *
+
+-e --head	
+
+Make a HEAD request instead of a GET. Note that this does not imply
+-h (--heads) to print the headers, nor -B (--no-body) to supress
+printing any body content. (Some servers, eg www.yahoo.com, treat
+HEAD like a GET.)
+
+=item *
+
+-F --file     FILE
+
+Read URLs from FILE (one per line) instead of from command line.
+Use filename C<-> for standard input.
+If there are two URLs on a line, the first one is used as the referer
+URL. The referer will remain un use until the next line with two URLs.
+If there is an additional field after the URL, that will be used as
+an I<-o> (I<--out>) output file until the next line with an output file.
+An output file should not begin with "http:/" or "https:/".
+Fields on each line of the URL file are whitespace separated.
+
+=item *
+
+-f --follow
+
+Follow redirects. If printing headers, the redirecting headers and
+the destination headers will be printed. (No loop detection is
+attempted.) If printing bodies and not saving via autoname, the
+redirecting body and the destination body will be printed. If
+saving via autoname, a new file will be opened for each request
+made.  Some redirects (eg loops) may cause the autonaming to pick
+the same filename as a previous request, which will cause the
+earlier file to be clobbered.
+
+=item *
+
+-H --host     HOST[:P] 
+
+Connect to HOST for request (useful for
+testing virtual hosts before a DNS change or
+use with I<-l> for proxies).
+
+=item *
+
+-h --heads	
+
+Print the response headers.
+
+=item *
+
+-L --language LANG
+
+Use LANG for Accept-Language: header. See
+I<--languages> for a small list.
+
+=item *
+
+-l --long	
+
+Use long address on GET line (using the
+full http://... format, a MUST for HTTP/1.1
+server compliance but handy with I<-H> for
+proxies).
+
+=item *
+
+-o --out     FILE
+
+Write output to FILE. Unlike I<-a> (I<--autoname>) this will not use a
+different file for each request. The autoname option has precedence
+over this option. Filenames in a I<-F> (I<--file>) URL file will also
+override this.
+
+=item *
+
+-p --post     STRING
+
+Use STRING as a post form contents (forms of
+type application/x-www-form-urlencoded only).
+
+=item *
+
+-P --filepost FILE
+
+Use contents of FILE as a post form contents. If the
+first line is of the form "Content-Type: foo/bar" it will be
+used to set the Content-Type: header. More than just the MIME
+type is allowed, but it must be all on one line. Typical POST
+content types are
+
+   application/x-www-form-urlencoded
+
+      Encoded like a typical CGI URL.
+
+   multipart/form-data
+
+      Each form element is in a separate MIME part; needed for
+      file uploads. This type requires a boundary parameter on
+      the Content-Type: header.
+
+=item *
+
+-R --refer    VALUE
+
+Set the (initial) referer header with VALUE.
+
+=item *
+
+-r --request	
+
+Print the request headers.
+
+=item *
+
+-s --status   CODE	
+
+After fetching a page -- including following redirects and printing bits
+of the response as controlled by other options -- if the HTTP status
+code is not exactly the one given, bget will exit (returning code 3
+to the shell). Useful for looping until one hits a 404 or the like.
+
+=item *
+
+-t --time     N	
+
+Use Benchmark module to time making the command line
+request(s) N times.
+
+=item *
+
+-u --user     USER:PW
+
+Basic authentification in the form {username}:{password}.
+
+=item *
+
+-w --wait     N	
+
+Wait N seconds between fetching each URL.
+
+=item *
+
+-w --wait     A,D	
+
+Waits a random number of seconds, average A standard deviation D,
+between fetching each URL. Requires the Math::Random module.
+Useful for being subtle when fetching a lot of pages, along with
+emulating a browser and using per-page referer headers via the
+I<-F> (I<--file>) method.
+
+=item *
+
+--help                 
+
+Show a help message and exit.
+
+=item *
+
+--version              
+
+Print version and exit.
+
+=item *
+
+--emulations           
+
+Print list of available browser emulations.
+
+=item *
+
+--languages            
+
+Print a sample of language codes.
+
+=back
+
+=head2 Note
+
+If I<-H> (I<--host>) is used with multiple URLs, all connections are
+made to the specified HOST (and port) even if different hosts
+are used in the URLs. This can be used to fetch files through
+a HTTP proxy if I<-l> (I<--long>) is also used.
+
+With I<-L> (I<--langauge>) the Accept-Language: header will not be
+added if the browser has not been observed to use it.
+
+=head1 EMULATIONS
+
+The following browsers are recognized for header emulation. This
+might not be the definitive list. Check I<--emulations> for that.
+Some have comments to help identify them.
+
+=over 4
+
+=item *
+
+Amaya-8.1
+
+Amaya is the W3C's combination browser page editor, it is a HTTP/1.1
+client so bget might function poorly emulating it.
+
+=item *
+
+links-0.84
+
+Text mode browser for Unix.
+E<lt>http://artax.karlin.mff.cuni.cz/~mikulas/linksE<gt>
+Version 0.84 does not do cookies or referer headers, so we might
+misemulate it that way.
+
+=item * 
+
+elinks-0.5pre4-linux
+
+Forked from links, this is another text mode browser. Quirks include
+giving a bunch away about the system, including window size, in the
+User-Agent: and including a 'Referer' header in URLs entered by hand.
+The User-Agent for this is from a Redhat 7.1 x86 system in an 80x24 window.
+E<lt>http://elinks.or.cz/E<gt>
+
+=item *
+
+w3c-5.2.8
+
+Command line web tool that uses libwww. This is an HTTP/1.1
+client, but C<bget> only attempts to implement 1.0 so expect
+problems.
+E<lt>http://www.w3.org/ComLine/E<gt>
+
+=item *
+
+w3m-beta99
+
+Text mode browser for Unix.
+E<lt>http://ei5nazha.yz.yamagata-u.ac.jp/~aito/w3m/E<gt>
+
+=item *
+
+Linux-Mosaic-2.6
+
+The browser that started the rush, compiled for Linux. This is an
+archaic browser. It doesn't do Host: headers or Cookies:. bget can
+misemulate the Cookies: part, but won't do the Host: header. Many
+modern sites require this for proper operation, so expect problems.
+The headers this thing spits out are longer even than the Lynx ones.
+
+=item *
+
+Qweb-1.3
+
+Qweb was an early X11 style-sheet capable browser. Too bad it didn't do
+javascript (needed for some stylesheets) or even Host: headers. bget
+will misemulate this if you use Cookies, but won't supply a Host: header.
+
+=item *
+
+X11-Chimera-1.70
+
+The name 'Chimera' has been used by two different browsers. This is the
+X11 Chimera developed at the University of Las Vegas, not the Mac Mozilla
+derivative Chimera. In authentic use this browser does not have cookies
+or use Referer: headers.
+
+=item *
+
+ApacheBench-1.3
+
+ab, the benchmark tool that comes with the Apache httpd package.
+
+=item *
+
+Opera-3.60
+
+An old version of a popular alternative browser for Windows.
+
+=item *
+
+Windows-Opera-7beta
+
+More modern (2003) version of Opera.
+
+=item *
+
+Linux-Opera-6.11
+
+As of Opera 6.x there is a linux version.
+
+=item *
+
+lwp-request-1.38
+
+Lib WWW Perl module (these are the default headers).
+
+=item
+
+wget-1.6
+
+Command-line bulk page downloading tool for Unix.
+
+=item
+
+NetBSD-curl-7.10.4-HTTP1.1
+
+Command-line page upload/download tool for Unix. Prefers HTTP/1.1 but
+can do HTTP/1.0 upon request. Can do PUTs and DELETEs and other obscure
+things, too.
+
+=item
+
+NetBSD-curl-7.10.4-HTTP1.0
+
+Curl in HTTP/1.0 mode (bget is a HTTP1.0 tool, so this is safer).
+
+=item *
+
+iCab-pre1.7
+
+Popular alternative browser for Macs.
+
+=item *
+
+junkbuster-2
+
+Once popular ad- and cookie-filtering proxy.  Junkbuster does a bunch
+of header editing from the actual browser headers, and thus the headers 
+out of it can vary considerably from this. It looks like Accept-*
+headers are not edited, allowing identification of the underlying
+browser sometimes. The Accept-* headers here come from a Netscape 4.7.
+By default, Junkbuster masquerades as Netscape 3.01 (GOLD) for Mac PPC.
+
+=item *
+
+Lynx-2.8.1
+
+Popular text mode browser, predominately unix.
+
+=item *
+
+Linux-Mozilla-1.0.0
+
+Mozilla is the open source version of Netscape 7. It exists for many
+platforms.
+
+=item *
+
+Linux-Phoenix-0.6-beta
+
+Phoenix (formerly Firebird) is Mozilla with a different user-interface
+library. There are unix, windows and mac variants.
+
+=item *
+
+Konqueror-2.1.1
+
+Konqueror is a mostly-Linux browser based on KDE.
+
+=item *
+
+OpenOffice-1.0.0
+
+OpenOffice is a StarOffice relation, intended to be a free Unix
+"Office" compatible software bundle. It includes an HTML editor
+that can download pages to edit, but as such it does things like
+issue PROPFIND requests that are not emulated here.
+
+=item *
+
+WindowsNT-Explorer-5.0-as-4.0
+
+Explorer 5.0 can be installed with a compatibility mode that emulates
+(or claims to emaulate) Explorer 4.0.
+
+=item *
+
+Windows98-Explorer-5.5
+
+=item *
+
+WindowsNT-ActiveDesktop
+
+This is on a system with IE5.5 installed, but this identifies
+itself as IE4.01. This one is hard to do right, since in my
+tests I saw two requests for the test file. The first came
+with this UA, the second had this instead:
+
+User-Agent: Mozilla/4.0 (compatible; MSIE 4.01; MSIECrawler; Windows NT)
+
+The crawler version had an 'Accept-Language: us-en' as well as a
+different order to the headers (Accept: User-Agent:, Accept-Language:
+Accept-Encoding, Host:).
+
+=item *
+
+WindowsNT-Netscape6
+
+=item *
+
+WindowsNT-Explorer-5.5
+
+=item *
+
+Windows98-Explorer-4.0
+
+=item *
+
+WindowsNT-Explorer-5.0
+
+Normal mode Windows NT IE 5.0.
+
+=item *
+
+WindowsNT-ExplorerOffline-5.0
+
+IE can optional crawl pages to cache them for offline browsing.
+This is Windows NT IE 5.01 in crawl mode.
+
+=item *
+
+WindowsNT-Netscape-4.6
+
+=item *
+
+MacPPC-Explorer-4.0
+
+=item *
+
+MacPPC-Netscape-4.0
+
+=item *
+
+MacPPC-Netscape-4.6
+
+=item *
+
+Linux-Netscape-3.0
+
+=item *
+
+Linux-Netscape-4.51
+
+=back
+
+=head1 LANGUAGES
+
+In HTTP standard languages use the ISO 639 two letter code, but
+can have an optional two letter country code for national variants.
+Generic English is 'en', American English is 'en-us', Irish English
+is 'en-ie', Australian English is 'en-au'.
+
+Some other lanuages:
+
+  af	Afrikaans
+  sq	Albanian
+  eu	Basque
+  bg	Bulgarian
+  be	Byelorussian
+  ca	Catalan
+  zh	Chinese
+  zh-cn	Chinese/China
+  zh-tw	Chinese/Taiwan
+  hr	Croatian
+  cs	Czech
+  da	Danish
+  nl	Dutch
+  nl-be	Dutch/Belgium
+  fo	Faeroese
+  fi	Finnish
+  fr	French
+  fr-be	French/Belgium
+  fr-ca	French/Canada
+  fr-fr	French/France
+  fr-ch	French/Switzerland
+  gl	Galician
+  de	German
+  de-at	German/Austria
+  de-de	German/Germany
+  de-ch	German/Switzerland
+  el	Greek
+  hu	Hungarian
+  is	Icelandic
+  id	Indonesian
+  ga	Irish
+  it	Italian
+  ja	Japanese
+  ko	Korean
+  mk	Macedonian
+  no	Norwegian
+  pl	Polish
+  pt	Portuguese
+  pt-br	Portuguese/Brazil
+  ro	Romanian
+  ru	Russian
+  gd	Scots Gaelic
+  sr	Serbian
+  sk	Slovak
+  sl	Slovenian
+  es	Spanish
+  es-ar	Spanish/Argentina
+  es-co	Spanish/Colombia
+  ex-mx	Spanish/Mexico
+  es-es	Spanish/Spain
+  sv	Swedish
+  tr	Turkish
+  uk	Ukrainian
+
+This list is from the default set of lanuages in Netscape 4.5.
+IE has a different set, including more country variations. Note
+that the country variations are frequently misused. A request
+with a language header like:
+
+	Accept-Language: en-us, es-mx; q=0.7, fr-ca; q=0.3
+
+Would specify a first choice language of US English, second
+choice Mexican Spanish, third choice Canadian French. If
+a content-negotiating server only has generic English, generic
+Spanish, and generic French, then by specification it should
+return a "406 Not Acceptable" error, since it has no languages
+that match. This could be seen as a deficiency of the
+spec, but that's the way it is.
+
+=head1 OSNAMES
+
+A unix-like directory structure is assumed.
+
+=head1 COPYRIGHT
+
+Copyright 1999,2003 by Eli the Bearded / Benjamin Elijah Griffin.
+Released under the same license(s) as Perl.
+
+=head1 AUTHOR
+
+Eli the Bearded originally wrote this to spy on headers and have a
+low cpu impact way to fetch files over http. It evolved from there.
+
+=head1 CPAN INFO
+
+=head1 SCRIPT CATEGORIES
+
+Web
+
+=head1 README
+
+bget - basic HTTP get tool
+
+=head1 PREREQUISITES
+
+This uses the C<strict>, C<vars>, C<Socket>, and C<Carp> modules.
+
+=head1 COREQUISITES
+
+This will try to use the C<Benchmark> and C<Math::Random> modules
+when run with certain options.
+
+=head1 OSNAMES
+
+Should not be OS dependent. The autoname feature (-a / --autoname)
+assumes that C</> seperates directories, however this should have
+minimal impact since it always tries to save in the currrent directory.
+Problems will likely only ensue if the automatically chosen name
+contains a directory seperator for the current OS.
+
+=cut

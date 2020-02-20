@@ -1,0 +1,826 @@
+#!/usr/bin/perl
+#
+# By Jason Holland - Myboxen [ AT ] CPAN [ DOT ] org
+#
+# Credits
+# Syntax Highlighting and verbiage based upon vim syntax file from
+# Nick Hibma <n_hibma@van-laarhoven.org>
+# Please read your /usr/share/vim/syntax/pl.vim file for more information
+# 
+# v0.1 - initial release
+# v0.2 - keywords defined in more detail
+
+package p2h;
+
+my $CommentColor;
+my $KeywordColor;
+my $SpecialColor;
+my $ConditionalColors;
+my $KeywordsColors;
+my $ConditionalsColors;
+my $LoopsColors;
+my $SpecialColors;
+my $EscapesColor;
+my $OperatorsColors;
+my $ControlColors;
+my $StatementStorageColors;
+my $StatementControlColors;
+my $StatementScalarColors;
+my $StatementRegExpColors;
+my $StatementNumericColors;
+my $StatementListColors;
+my $StatementHashColors;
+my $StatementIOFuncColors;
+my $StatementFiledescColors;
+my $StatementVectorColors;
+my $StatementFilesColors;
+my $StatementFlowColors;
+my $StatementIncludeColors;
+my $StatementScopeColors;
+my $StatementProcColors;
+my $StatementSocketColors;
+my $StatementIPCColors;
+my $StatementNetworkColors;
+my $StatementPwordColors;
+my $StatementTimeColors;
+my $StatementMiscColors;
+my $StatementNewColors;
+
+my @Keywords = qw(
+    -A -B -C -M -O -R -S -T -W -X -b -c -d -e -f -g -k -l -o -p
+    -r -s -t -u -w -x -z
+    ARGV DATA ENV SIG STDERR STDIN STDOUT
+    atan2
+    bind binmode bless
+    caller chdir chmod chomp chop chown chr chroot close closedir
+    cmp connect continue cos crypt
+    dbmclose dbmopen defined delete die dump
+    endgrent endhostent endnetent endprotoent
+    endpwent endservent eof eq eval exec exit exp
+    fcntl fileno flock fork format formline
+    ge getc getgrent getgrgid getgrnam gethostbyaddr gethostbyname
+    gethostent getlogin getnetbyaddr getnetbyname getnetent getpeername
+    getpgrp getppid getpriority getprotobyname getprotobynumber
+    getprotoent getpwent getpwnam getpwuid getservbyname getservbyport
+    getservent getsockname getsockopt glob gmtime goto grep gt
+    hex
+    import index int ioctl
+    join
+    keys kill
+    last lc lcfirst le length link listen local localtime log lstat lt
+    m map mkdir msgctl msgget msgrcv msgsnd my
+    ne no
+    oct open opendir ord
+    pack package pipe pop pos print printf push
+    q qq quotemeta qw qx
+    rand read readdir readlink recv redo ref rename require reset
+    return reverse rewinddir rindex rmdir
+    s scalar seek seekdir select semctl semget semop send setgrent
+    sethostent setnetent setpgrp setpriority setprotoent setpwent
+    setservent setsockopt shift shmctl shmget shmread shmwrite shutdown
+    sin sleep socket socketpair sort splice split sprintf sqrt srand
+    stat study sub substr symlink syscall sysopen sysread system
+    syswrite
+    tell telldir tie tied time times tr truncate
+    uc ucfirst umask undef unless unlink unpack unshift untie until
+    use utime
+    values vec wait
+    waitpid wantarray warn while write
+    y
+);
+
+my @Conditionals = qw(
+	and
+	case cmp
+	each else elseif err eq 
+	exists
+	ge gt
+	if
+	le lt
+	ne next not
+	or
+	switch
+	unless
+	xor
+);
+
+my @Loops = qw(
+	continue
+	do
+	for foreach
+	until
+	while
+);
+
+
+my @Special = qw(
+	strict
+	Switch
+	use
+	undef
+);
+
+my @Escapes = qw(
+	\n
+	\t
+	\"
+);
+
+my @Operators = qw(
+	and
+	bless
+	defined
+	not
+	or
+	ref
+	undef	
+);
+
+my @Control = qw(
+	BEGIN
+	END
+);
+
+my @StatementStorage = qw(
+	local
+	my
+	our
+);
+
+my @StatementControl = qw(
+	goto
+	last
+	next
+	redo return
+);
+
+my @StatementScalar = qw(
+	chop chomp chr crypt
+	index
+	lc lcfirst length
+	ord
+	pack
+	reverse rindex
+	sprintf substr
+	uc ucfirst
+);
+
+my @StatementRegExp = qw(
+	pos
+	split study
+	quotemeta
+);
+
+my @StatementNumeric = qw(
+	abs atan2 
+	cos
+	exp
+	hex
+	int
+	log
+	oct
+	rand
+	sin
+	sqrt
+	srand
+);
+
+my @StatementList = qw(
+	grep
+	join
+	map
+	pack pop push
+	reverse
+	shift splice split sort
+	unpack unshift
+);
+
+my @StatementHash = qw(
+	each exists
+	keys
+	values
+	tie tied 
+	untie
+);
+
+my @StatementIOFunc = qw(
+	carp confess croak
+	dbmclose dbmopen die
+	syscall
+);
+
+my @StatementFiledesc = qw(
+	binmode
+	close closedir 
+	eof
+	fileno flock
+	getc
+	lstat
+	open
+	print printf 
+	read readdir readline readpipe rewinddir
+	select stat
+	tell telldir write
+);
+
+my @StatementVector = qw(
+	pack
+	vec
+);
+
+my @StatementFiles = qw(
+	chdir chmod chown chroot
+	glob
+	link
+	mkdir
+	readlink rename rmdir
+	symlink
+	umask unlink utime
+);
+
+my @StatementFlow = qw(
+	sub
+	caller
+	die dump
+	eval exit
+	return
+	wantarray	
+);
+
+my @StatementInclude = qw(
+	require
+);
+
+my @StatementScope = qw(
+	import
+);
+
+my @StatementProc = qw(
+	alarm
+	exec
+	fork
+	getpgrp getppid getpriority
+	kill 
+	pipe
+	setpgrp setpriority sleep system
+	times
+	wait waitpid
+);
+
+my @StatementSocket = qw(
+	accept
+	bind
+	connect
+	getpeername getsockname getsockopt
+	listen
+	recv
+	send setscokopt shutdown socket socketpair	
+);
+
+my @StatementIPC = qw(
+	msgctl msgget msgrcv msgsnd
+	semctl semget semop shmctl shmgetshmread shmwrite
+);
+
+my @StatementNetwork = qw(
+	endhostent endnetent endprotoent endservent 
+	gethostbyaddr gethostbyname gethostent getnetbyaddr getnetbyname getnetent getprotobyname getprotobynumber getprotoent
+	getservbyname getservbyport getservent
+	sethostent setnetent setprotoent setservent
+);
+
+my @StatementPword = qw(
+	endpwent endgrent
+	getpwuid getpwnam getpwent getgrent getgrgid getlogin getgrnam
+	setpwent setgrent
+);
+
+my @StatementTime = qw(
+	gmtime localtime time times	
+);
+
+my @StatementMisc = qw(
+	delete
+	formline
+	lock
+	prototype
+	reset
+	scalar
+	warn
+);
+
+my @StatementNew = qw(
+	new
+);
+
+my @StatementTodo = qw(
+	FIXME
+	TBD TODO
+);
+
+
+
+my %Keywords;
+@Keywords{@Keywords} = (1) x scalar(@Keywords);
+
+my %Conditionals;
+@Conditionals{@Conditionals} = (1) x scalar(@Conditionals);
+
+my %Special;
+@Special{@Special} = (1) x scalar(@Special);
+
+my %Escapes;
+@Escapes{@Escapes} = (1) x scalar(@Escapes);
+
+my %Loops;
+@Loops{@Loops} = (1) x scalar(@Loops);
+
+my %Operators;
+@Operators{@Operators} = (1) x scalar(@Operators);
+
+my %Control;
+@Control{@Control} = (1) x scalar(@Control);
+
+my %StatementStorage;
+@StatementStorage{@StatementStorage} = (1) x scalar(@StatementStorage);
+
+my %StatementControl;
+@StatementControl{@StatementControl} = (1) x scalar(@StatementControl);
+
+my %StatementScalar;
+@StatementScalar{@StatementScalar} = (1) x scalar(@StatementScalar);
+
+my %StatementRegExp;
+@StatementRegExp{@StatementRegExp} = (1) x scalar(@StatementRegExp);
+
+my %StatementNumeric;
+@StatementNumeric{@StatementNumeric} = (1) x scalar(@StatementNumeric);
+
+my %StatementList;
+@StatementList{@StatementList} = (1) x scalar(@StatementList);
+
+my %StatementHash;
+@StatementHash{@StatementHash} = (1) x scalar(@StatementHash);
+
+my %StatementIOFunc;
+@StatementIOFunc{@StatementIOFunc} = (1) x scalar(@StatementIOFunc);
+
+my %StatementFiledesc;
+@StatementFiledesc{@StatementFiledesc} = (1) x scalar(@StatementFiledesc);
+
+my %StatementVector;
+@StatementVector{@StatementVector} = (1) x scalar(@StatementVector);
+
+my %StatementFiles;
+@StatementFiles{@StatementFiles} = (1) x scalar(@StatementFiles);
+
+my %StatementFlow;
+@StatementFlow{@StatementFlow} = (1) x scalar(@StatementFlow);
+
+my %StatementInclude;
+@StatementInclude{@StatementInclude} = (1) x scalar(@StatementInclude);
+
+my %StatementScope;
+@StatementScope{@StatementScope} = (1) x scalar(@StatementScope);
+
+my %StatementProc;
+@StatementProc{@StatementProc} = (1) x scalar(@StatementProc);
+
+my %StatementSocket;
+@StatementSocket{@StatementSocket} = (1) x scalar(@StatementSocket);
+
+my %StatementIPC;
+@StatementIPC{@StatementIPC} = (1) x scalar(@StatementIPC);
+
+my %StatementNetwork;
+@StatementNetwork{@StatementNetwork} = (1) x scalar(@StatementNetwork);
+
+my %StatementPword;
+@StatementPword{@StatementPword} = (1) x scalar(@StatementPword);
+
+my %StatementTime;
+@StatementTime{@StatementTime} = (1) x scalar(@StatementTime);
+
+my %StatementMisc;
+@StatementMisc{@StatementMisc} = (1) x scalar(@StatementMisc);
+
+my %StatementNew;
+@StatementNew{@StatementNew} = (1) x scalar(@StatementNew);
+
+
+
+$FontComment = "courier";
+
+$CommentColor = "#00aa00";
+$KeywordColor = "#000080";
+$ConditionalsColor = "#800080";
+$SpecialColor = "#BB0000";
+$EscapesColor = "#800000";
+#$CommentColor = "#000080";
+$KeywordColor = "#000080";
+$SpecialColor = "#dddd00";
+
+$StatementStorageColors="#dddd00";
+$StatementControlColors="#dddd00";
+$StatementScalarColors="#dddd00";
+$StatementRegExpColors="#dddd00";
+$StatementNumericColors="#dddd00";
+$StatementListColors="#dddd00";
+$StatementHashColors="#dddd00";
+$StatementIOFuncColors="#dddd00";
+$StatementFiledescColors = "#0000DD";
+$StatementVectorColors = "#000080";
+$StatementFilesColors = "#000080";
+$StatementFlowColors = "#FF0000";
+$StatementIncludeColors = "#000080";
+$StatementScopeColors = "#000080";
+$StatementProcColors = "#000080";
+$StatementSocketColors = "#000080";
+$StatementIPCColors = "#000080";
+$StatementNetworkColors = "#000080";
+$StatementPwordColors = "#000080";
+$StatementTimeColors = "#000080";
+
+
+
+
+
+
+
+
+
+my($perlcode, $comment);
+print "<html><head><title></title></head><body text=#ffffff bgcolor=black><pre>\n";
+while (<>) {
+    ($perlcode, $comment) = split(/^#/, $_, 2);
+    if ($perlcode ne '') {
+	
+        #$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_keyword($1)/ge;
+	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_conditionals($1)/ge;
+	#$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_special($1)/ge;
+	#$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_keyword($1)/ge;
+	#$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_special($1)/ge;
+	#$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_conditional($1)/ge;
+	#$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_keywords($1)/ge;
+	#$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_conditionals($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_loops($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_special($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_escapes($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_operators($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_control($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementstorage($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementcontrol($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementscalar($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementregexp($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementnumeric($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementlist($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementhash($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementiofunc($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementfiledesc($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementvector($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementfiles($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementflow($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementinclude($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementscope($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementproc($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementsocket($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementIPC($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementnetwork($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementpword($1)/ge;
+  	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementtime($1)/ge;
+	#$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_statementmisc($1)/ge;
+	#$perlcode =~ s/(\\n)/colorize_escapes($1)/ge;
+	$perlcode =~ s/<H1>/\&lt;H1\&gt;/g;
+	$perlcode =~ s/<\/H1>/\&lt;\/H1\&gt;/g;
+	$perlcode =~ s/\$\!/<font color=aqua>\$\!<\/font>/g;
+	$perlcode =~ s/\$_/<font color=aqua>\$_<\/font>/g;
+	$perlcode =~ s/\@_/<font color=aqua>\@_<\/font>/g;
+	$perlcode =~ s/\\n/<font color=red>\\n<\/font>/g;
+	$perlcode =~ s/<br>/\&lt;br\&gt;/g;
+	$perlcode =~ s/<br \/>/\&lt;br \/\&gt;/g;
+	$perlcode =~ s/<p>/\&lt;p\&gt;/g;
+	$perlcode =~ s/<p \/>/\&lt;p \/\&gt;/g;
+	$perlcode =~ s/<P>/\&lt;P\&gt;/g;
+	$perlcode =~ s/<P \/>/\&lt;P \/\&gt;/g;
+	$perlcode =~ s/(<|&|\b\w+\b|-\w\b)/colorize_comment($1)/ge;
+	
+	#/\(\)<\@,;:\\``\.\[\]/>
+	
+	print $perlcode;
+    }
+    if ($comment ne '') {
+	print qq(<FONT );
+	print qq(FACE="$FontComment" )  if $FontComment;
+	print qq(COLOR="$CommentColor">),
+	      '#', $comment,
+	      qq(</FONT>);
+    }
+}
+
+print "</pre></body></html>\n";
+
+sub colorize_keyword {
+    my $word = shift;
+
+    if ($word eq '<') {
+    	return "&lt;";
+    }
+    if ($word eq '&') {
+    	return "&amp;";
+    }
+    if ($word eq '>') {
+	return "&gt;";
+    }
+    if ($Keywords{$word}) {
+	return qq(<FONT COLOR="$KeywordColor"><B>$word</B></FONT>);
+    }
+    $word;
+}
+
+
+sub colorize_conditionals {
+    my $word = shift;
+
+    if ($Conditionals{$word}) {
+	return qq(<FONT COLOR="$ConditionalsColor"><B>$word</B></FONT>);
+    }
+    $word;
+}
+
+sub colorize_special {
+    my $word = shift;
+
+    if ($Special{$word}) {
+	return qq(<FONT COLOR="$SpecialColor"><B>$word</B></FONT>);
+    }
+    $word;
+}
+
+sub colorize_escapes {
+	my $word = shift;
+
+	if ($Escapes{$word}) {
+		return qq(<FONT COLOR="$EscapesColor">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_VarPlain {
+	
+}
+
+sub colorize_comment {
+	my $word = shift;
+	if ($Comment{$word}) {
+		return qq(<FONT COLOR="$CommentColor">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_loops {
+	my $word = shift;
+	if ($Loops{$word}) {
+		return qq(<FONT COLOR="$LoopsColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_operators {
+	my $word = shift;
+	if ($operators{$word}) {
+		return qq(<FONT COLOR="$operators">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_control {
+	my $word = shift;
+	if ($control{$word}) {
+		return qq(<FONT COLOR="$ControlColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementstorage {
+	my $word = shift;
+	if ($StatementStorage{$word}) {
+		return qq(<FONT COLOR="$StatementStorageColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementcontrol {
+	my $word = shift;
+	if ($StatementControl{$word}) {
+		return qq(<FONT COLOR="$StatementControlColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementscalar {
+	my $word = shift;
+	if ($StatementScalar{$word}) {
+		return qq(<FONT COLOR="$StatementScalarColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementregexp {
+	my $word = shift;
+	if ($StatementRegExp{$word}) {
+		return qq(<FONT COLOR="$StatementRegExpColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementnumeric {
+	my $word = shift;
+	if ($StatementNumeric{$word}) {
+		return qq(<FONT COLOR="$StatementNumericColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementlist {
+	my $word = shift;
+	if ($StatementList{$word}) {
+		return qq(<FONT COLOR="$StatementListColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementhash {
+	my $word = shift;
+	if ($StatementHash{$word}) {
+		return qq(<FONT COLOR="$StatementHashColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementiofunc {
+	my $word = shift;
+	if ($StatementIOFunc{$word}) {
+		return qq(<FONT COLOR="$StatementIOFuncColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementfiledesc {
+	my $word = shift;
+	if ($StatementFiledesc{$word}) {
+		return qq(<FONT COLOR="$StatementFiledescColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementvector {
+	my $word = shift;
+	if ($StatementVector{$word}) {
+		return qq(<FONT COLOR="$StatementVectorColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementfiles {
+	my $word = shift;
+	if ($StatementFiles{$word}) {
+		return qq(<FONT COLOR="$StatementFilesColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementflow {
+	my $word = shift;
+	if ($StatementFlow{$word}) {
+		return qq(<FONT COLOR="$StatementFlowColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementinclude {
+	my $word = shift;
+	if ($StatementInclude{$word}) {
+		return qq(<FONT COLOR="$StatementIncludeColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementscope {
+	my $word = shift;
+	if ($StatementScope{$word}) {
+		return qq(<FONT COLOR="$StatementScopeColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementproc {
+	my $word = shift;
+	if ($StatementProc{$word}) {
+		return qq(<FONT COLOR="$StatementProcColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementsocket {
+	my $word = shift;
+	if ($StatementSocket{$word}) {
+		return qq(<FONT COLOR="$StatementSocketColors">$word</FONT>);
+	}
+	$word
+}
+
+sub colorize_statementIPC {
+	my $word = shift;
+	if ($StatementIPC{$word}) {
+		return qq(<FONT COLOR="$StatementIPCColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementnetwork {
+	my $word = shift;
+	if ($StatementNetwork{$word}) {
+		return qq(<FONT COLOR="$StatementNetworkColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementpword {
+	my $word = shift;
+	if ($StatementPword{$word}) {
+		return qq(<FONT COLOR="$StatementPwordColors">$word</FONT>);
+	}
+	$word;
+}
+
+sub colorize_statementtime {
+	my $word = shift;
+	if ($StatementTime{$word}) {
+		return qq(<FONT COLOR="$StatementTimeColors">$word</FONT>);
+	}
+	$word;
+}
+
+
+
+=head1 NAME
+
+p2h - perl to html 4.01
+
+=head1 DESCRIPTION
+
+This script will convert your perl script to colorized html conforming to 
+W3C HTML 4.01 standard.
+
+=head1 README
+
+p2h 
+v 0.02
+
+USAGE:
+p2h yourperl.pl >yourhtml.html
+
+Consider this version alpha. It will convert code without 
+errors. It will not output errors other than those not
+caught, which is all :)
+
+It will not take command line arguments including --help.
+
+The next revision will take command line arguments to show
+usage.
+
+TODO
+Add generic color themes, similar to vim. The ones I plan
+on implementing are common ones like
+light
+dark
+borland
+elflord
+black and white printable
+
+If you have requests or suggestions please email them to 
+me at
+
+jasonholland [ AT ] rawsoftware [ DOT ] com
+
+=head1 PREREQUISITES
+
+This script uses the strict module C<strict>.
+
+=head1 COREQUISITES
+
+none
+
+=pod OSNAMES
+
+any
+
+=pod SCRIPT CATEGORIES
+
+CPAN/Administrative
+Educational
+Web
+Win32
+
+
+=cut

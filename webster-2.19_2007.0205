@@ -1,0 +1,816 @@
+#!/usr/bin/perl -w
+#
+#   Terjes WWWebster client version 2.19 4/2-2007
+#   Copyright ©1997 ©2007  Terje Bråten     E-mail: terjebr@broadpark.no
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even any implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  This program assumes your terminal can handle the ISO-8859-1 char-set.
+
+use strict;
+use Socket;
+
+my ($VERSION) = '2.19';
+
+my $gotReadKey = 0;
+if (!defined $ENV{'WEBSTER_NOAUTOWRAP'})
+{
+    eval {require Term::ReadKey; import Term::ReadKey;};
+    if ($@ eq "")
+    {
+	# we have ReadKey,
+	$gotReadKey = 1;
+    }
+}
+
+=head1 NAME
+
+webster - look up English words in the Webster dictionary
+
+=head1 SYNOPSIS
+
+B<webster>  [B<-l>] [B<-i> | B<-I>] [B<-d> I<word> | B<-t> I<word> | B<-v> | B<-c> | B<-?> | B<-m> | I<word>]
+
+I<word> is a word to find in the dictionary.
+
+=head1 DESCRIPTION
+
+A tiny WWW-browser that connects to the WWWebster dictionary at
+B<http://www.m-w.com/>
+and provides an convenient access to the dictionary from the command line.
+
+It is based on Merriam-Webster's Collegiate® Dictionary, 10th Edition
+published by Merriam-Webster Inc.
+
+=head1 OPTIONS
+
+=over 10
+
+=item B<-l>
+
+Long format (same as setting the environment variable B<WEBSTER_VERBOSE>=1)
+
+=item B<-i>
+
+Do not convert italic words to all uppercase words.
+
+=item B<-I>
+
+Do convert all italic words to all uppercase words.
+(This is the default, unless
+the environment variable B<WEBSTER_NOUPPERITALIC> is true.)
+
+=item B<-d> I<word>
+
+Use the dictionary to define I<word>.
+This is the same as to just specify a I<word> with no options,
+except that I<word> can begin with a hypen without being parsed as an option.
+
+=item B<-t> I<word>
+
+Use the thesaurus to find a I<word> instead of using the dictionary.
+
+=item B<-v>
+
+Display version info.
+
+=item B<-c>
+
+Display the credit.
+
+=item B<-?> or B<-h>
+
+Display usage help.
+
+=item B<-m>
+
+Read your mail
+
+=back
+
+=head1 USAGE
+
+In its most common use, B<webster> connects to the WWWebster dictionary,
+fetches the definition of the requested word, prints that definition
+to standard output and exits successfully.
+
+If there are multiple words matching the requested word, B<webster>
+prints a numbered list of possible words and lets you choose which
+word you want a definition for.  Likewise, if the requested word does
+not exist, B<webster> gives a list of similar words to choose from.
+In this way, the program can be used as a spelling checker.
+
+=head1 ENVIRONMENT
+
+If you have set the environment variable B<WEBSTER_VERBOSE> to true
+(or anything nonzero) this WWWebster client will insert more
+newlines in the output.
+
+To stop the program from converting all italic words to all uppercase words
+you can set B<WEBSTER_NOUPPERITALIC> to true (or anything nonzero).
+
+If B<WEBSTER_NOAUTOWRAP> is not set then the lines
+will wrap so the text only uses 90% of your terminal width,
+provided the C<Term::ReadKey> module is available in your perl interpreter.
+
+For those that do not (want to) have the module C<Term::ReadKey>
+I have also included support for the enironment variable B<WEBSTER_FIXEDWRAP>.
+If  B<WEBSTER_FIXEDWRAP> is set to a non-zero value it is taken as a fixed
+linewith to wrap the text at. If your terminal is 80 characters wide,
+a good value for B<WEBSTER_FIXEDWRAP> can be 72.
+B<WEBSTER_FIXEDWRAP> is ignored if the module C<Term::ReadKey> is found and
+B<WEBSTER_NOAUTOWRAP> is not set.
+
+=head1 PREREQUISITES
+
+This perl script requires the C<Socket> module that enables
+you to open a socket to a tcp/ip internet connection.
+The terminal running the script must be able to handle
+the full 8-bits ISO-8859-1 char-set.
+
+=head1 COREQUISITES
+
+This script wants to use the C<Term::ReadKey> module to determine
+the width of your terminal, but it can do without it.
+
+=head1 CREDIT
+
+This client for the WWWebster dictionary would not be possible if
+Merriam-Webster Inc had not put their dictionary on the web for
+everyone to use.
+
+The WWWebster dictionary is found at
+B<http://www.m-w.com/netdict.htm>
+
+Based on Merriam-Webster's Collegiate® Dictionary,
+10th Edition published by Merriam-Webster Inc.
+
+=head1 AUTHOR
+
+Written by Terje Bråten <terjebr@broadpark.no>.
+
+=head1 README
+
+A tiny WWW-browser that connects to the WWWebster dictionary at http://www.m-w.com/
+and provides an convenient access to the dictionary from the command line.
+
+=pod OSNAMES
+any
+
+=pod SCRIPT CATEGORIES
+Web
+
+=cut
+
+my ($more_linebreaks) = 0;
+# Set $more_linebreaks to be non-zero if you want to put
+# more line breaks (newlines) into the output.
+
+my ($upper_italic) = 1;
+# Set $upper_italic to be non-zero if you want to convert
+# italic words to upper case words in the output.
+
+
+if ($ENV{'WEBSTER_VERBOSE'})
+{
+    $more_linebreaks = 1;
+}
+
+if ($ENV{'WEBSTER_NOUPPERITALIC'})
+{
+    $upper_italic = 0;
+}
+
+
+my $Wchar = 0;
+if ($gotReadKey)
+{
+   #added by jcox
+   #Term::Size seems broken on NT, therefore I'm using Term::ReadKey
+   ($Wchar) = GetTerminalSize();
+   $Wchar = int(.90 * $Wchar);
+}
+elsif ($ENV{'WEBSTER_FIXEDWRAP'})
+{
+    $Wchar = int($ENV{'WEBSTER_FIXEDWRAP'});
+}
+
+my ($word) = shift;
+my ($option) = "";
+my ($Book) = "Dictionary";
+my ($optDone) = 0;
+
+die "No word to define. (Use option -h for help.)\n" unless $word;
+if ($word =~ s/^-+//)
+{
+    $option = $word;
+    $word = shift;
+}
+
+if ($option =~ m/^l/i)
+{
+    $more_linebreaks = 1;
+    $optDone = 1;
+}
+
+if ($optDone)
+{
+    if (defined $word && $word =~ s/^-+//)
+    {
+	$option = $word;
+	$word = shift;
+    }
+    $optDone = 0;
+}
+
+if ($option =~ m/^i/)
+{
+    $upper_italic = 0;
+    $optDone = 1;
+}
+if ($option =~ m/^I/)
+{
+    $upper_italic = 1;
+    $optDone = 1;
+}
+
+if ($optDone)
+{
+    if (defined $word && $word =~ s/^-+//)
+    {
+	$option = $word;
+	$word = shift;
+    }
+}
+
+if ($option =~ m/^c/i)
+{
+    print "
+This client for the WWWebster dictionary
+would not be possible if Merriam-Webster Inc had not
+put their dictionary on the web for everyone to use.
+
+The WWWebster dictionary is found at http://www.m-w.com/
+
+Based on Merriam-Webster's Collegiate® Dictionary,
+10th Edition published by Merriam-Webster Inc.
+
+";
+    exit;
+}
+
+if ($option =~ m/^v/i)
+{
+    print "Terjes webster agent, version $VERSION\n";
+    exit;
+}
+
+if ($option =~ m/\?|^h/i)
+{
+    my ($prog) = $0;
+    $prog =~ s:^.*/::;
+
+    print "
+Terjes webster agent, version $VERSION.
+
+This is a tiny WWW-browser that connect to the WWWebster
+dictionary at http://www.m-w.com/
+
+It is based on Merriam-Webster's Collegiate® Dictionary,
+10th Edition published by Merriam-Webster Inc.
+
+Syntax: $prog <option>|<word>
+
+<word> is a word to find in the dictionary.
+
+<option> is one of the following:
+
+ -d <word>, 
+ -dictionary <word> : Use the dictionary to define <word>. This is
+                      the same as to just specify a word with no options.
+
+ -t <word>,
+ -thesaurus <word>  : Use the thesaurus to find a <word> instead of 
+                      using the dictionary.
+
+ -v, -version       : Display version info.
+
+ -c, -credit        : Display the credit.
+
+ -h, -help          : Display this help.
+
+ -l, -long          : Long format (same as WEBSTER_VERBOSE=1)
+
+ -i, -ignoreitalic  : Do not convert italic words to uppercase words.
+
+ -I, -ITALIC        : Convert italic words to uppercase words.
+ 
+ -m, -mail          : Read your mail
+
+If you have set the environment variable WEBSTER_VERBOSE to true
+(or anything nonzero) this WWWebster client will insert more
+newlines in the output.
+
+";
+    exit;
+}
+
+if ($option =~ m/^m/i)
+{
+    exec 'cat $MAIL';
+}
+
+if ($option =~ m/^t/i)
+{
+    $Book = "Thesaurus";
+}
+
+die "No word to find. (Use option -h for help.)\n" unless $word;
+
+my (%Quotes)= (
+ "nbsp"   => " ",
+ "sp"     => " ",
+ "excl"   => "!",
+ "quot"   => "\"",
+ "num"    => "#",
+ "dollar" => "\$",
+ "percnt" => "\%",
+ "amp"    => "\&",
+ "apos"   => "\'",
+ "lpar"   => "(",
+ "rpar"   => ")",
+ "ast"    => "\*",
+ "plus"   => "+",
+ "comma"  => ",",
+ "minus"  => "-",
+ "hyphen" => "-",
+ "shy"    => "-",
+ "period" => ".",
+ "sol"    => "/",
+ "colon"  => ":",
+ "semi"   => ";",
+ "lt"     => "<",
+ "equals" => "=",
+ "gt"     => ">",
+ "quest"  => "?",
+ "commat" => "\@",
+ "at"     => "\@",
+ "lsqb"   => "[",
+ "bsol"   => "\\",
+ "rsqb"   => "]",
+ "circ"   => "^",
+ "lowbar" => "_",
+ "horbar" => "_",
+ "grave"  => "\`",
+ "lcub"   => "{",
+ "verbar" => "|",
+ "rcub"   => "}",
+ "tilde"  => "~",
+ "iexcl"  => pack("C",161),
+ "cent"   => pack("C",162),
+ "pound"  => pack("C",163),
+ "curren" => pack("C",164),
+ "yen"    => pack("C",165),
+ "brvbar" => pack("C",166),
+ "brkbar" => pack("C",166),
+ "sect"   => pack("C",167),
+ "uml"    => pack("C",168),
+ "die"    => pack("C",168),
+ "copy"   => pack("C",169),
+ "ordf"   => pack("C",170),
+ "laquo"  => pack("C",171),
+ "not"    => pack("C",172),
+ "reg"    => pack("C",174),
+ "macr"   => pack("C",175),
+ "hibar"  => pack("C",175),
+ "deg"    => pack("C",176),
+ "plusmn" => pack("C",177),
+ "sup2"   => pack("C",178),
+ "sup3"   => pack("C",179),
+ "acute"  => pack("C",180),
+ "micro"  => pack("C",181),
+ "para"   => pack("C",182),
+ "middot" => pack("C",183),
+ "cedil"  => pack("C",184),
+ "sup1"   => pack("C",185),
+ "ordm"   => pack("C",186),
+ "raquo"  => pack("C",187),
+ "fraq14" => pack("C",188),
+ "fraq12" => pack("C",189),
+ "half"   => pack("C",189),
+ "fraq34" => pack("C",190),
+ "iquest" => pack("C",191),
+ "Agrave" => pack("C",192),
+ "Aacute" => pack("C",193),
+ "Acirc"  => pack("C",194),
+ "Atilde" => pack("C",195),
+ "Auml"   => pack("C",196),
+ "Aring"  => pack("C",197),
+ "AElig"  => pack("C",198),
+ "Ccedil" => pack("C",199),
+ "Egrave" => pack("C",200),
+ "Eacute" => pack("C",201),
+ "Ecirc"  => pack("C",202),
+ "Euml"   => pack("C",203),
+ "Igrave" => pack("C",204),
+ "Iacute" => pack("C",205),
+ "Icirc"  => pack("C",206),
+ "Iuml"   => pack("C",207),
+ "ETH"    => pack("C",208),
+ "Ntilde" => pack("C",209),
+ "Ograve" => pack("C",210),
+ "Oacute" => pack("C",211),
+ "Ocirc"  => pack("C",212),
+ "Otilde" => pack("C",213),
+ "Ouml"   => pack("C",214),
+ "times"  => pack("C",215),
+ "Oslash" => pack("C",216),
+ "Ugrave" => pack("C",217),
+ "Uacute" => pack("C",218),
+ "Ucirc"  => pack("C",219),
+ "Uuml"   => pack("C",220),
+ "Yacute" => pack("C",221),
+ "THORN"  => pack("C",222),
+ "szlig"  => pack("C",223),
+ "agrave" => pack("C",224),
+ "aacute" => pack("C",225),
+ "acirc"  => pack("C",226),
+ "atilde" => pack("C",227),
+ "auml"   => pack("C",228),
+ "aring"  => pack("C",229),
+ "aelig"  => pack("C",230),
+ "ccedil" => pack("C",231),
+ "egrave" => pack("C",232),
+ "eacute" => pack("C",233),
+ "ecirc"  => pack("C",234),
+ "euml"   => pack("C",235),
+ "igrave" => pack("C",236),
+ "iacute" => pack("C",237),
+ "icirc"  => pack("C",238),
+ "iuml"   => pack("C",239),
+ "eth"    => pack("C",240),
+ "ntilde" => pack("C",241),
+ "ograve" => pack("C",242),
+ "oacute" => pack("C",243),
+ "ocirc"  => pack("C",244),
+ "otilde" => pack("C",245),
+ "ouml"   => pack("C",246),
+ "divide" => pack("C",247),
+ "oslash" => pack("C",248),
+ "ugrave" => pack("C",249),
+ "uacute" => pack("C",250),
+ "ucirc"  => pack("C",251),
+ "uuml"   => pack("C",252),
+ "yacute" => pack("C",253),
+ "thorn"  => pack("C",254),
+ "yuml"   => pack("C",255),
+	       );
+
+my ($part,$skip,$Start_tag,$StartString,$listword,
+    $notfound,$select,$hdwd,$list,$idx,$choice,@Options);
+
+&MWOpen("book=$Book&va=$word");
+
+$idx=0;
+$choice=0;
+$select=0;
+$part = 0;
+$skip = 1;
+$Start_tag = '<div\s+class="(word_definition|page_content_box)">';
+$StartString = $Start_tag;
+
+while (<MW>)
+{
+#   print "DEBUG: part=$part=>$_";
+
+    if ($skip != 0)
+    {
+	next unless m£$StartString£i;
+	$skip = 0;
+	$part++;
+    }
+    
+    if ($part==1)
+    {
+	$notfound=0; #Prepare this for part 2
+	$skip = 1;
+	$StartString = "<h\\d>|<p>|<br|to look up the current word";
+	next;
+    }
+
+    if ($part==2)
+    {
+	next if /^\s*$/;
+	next if (m:^\s*<h\d>:i);
+	next if (m:^\s*</t:i);
+	next if (m:^\s*<br>\s*$:i);
+	next if m/Click on the Collegiate/;
+	next if m/Powered by /;
+	next if m/Suggestions for /;
+	next if m/One entry found /;
+
+	if(m/isn't in the dictionary|No entries found/)
+	{
+	    $notfound=1;
+	    s/\..*$/./;
+	}
+	elsif ($choice>0 and m/ entries found for |select|list of|are listed below/)
+	{
+	    # Already have selected once
+	    $part=4;
+	    $skip=1;
+	    $StartString = "Entry.*:";
+	    print "\n\n";
+	    next;
+	}
+
+	if (/The first 10 are listed below/)
+	{
+            s/<[^>]*>//g;
+            print;
+	    print "(For more entries you must buy a product from Merriam Webster.)\n\n";
+	    next;
+	}
+
+
+	if (($notfound and m/<pre>/i) or m/select|list of/)
+	{
+	    # We begin a select
+	    $part=23;
+	    $idx=0;
+	    @Options=();
+	    print "Choose an entry from this list:\n\n";
+	    next;
+	}
+
+	if (m:<(/form|pre)>:i)
+	{
+	    # Part 2 is over and no select is found
+	    if ($notfound)
+	    {
+	    	close (MW) || die "close: $!";
+	    	exit;
+	    }
+	    $part=4;
+	    $skip = 1;
+	    $StartString = "Entry.*:";
+	    print "\n";
+	    next;
+	}
+
+	s/^\s*//;
+	s/<[^>]*>//g;
+	next if /^\s*$/;
+    }
+
+    if ($part==3 || $part==23)
+    {
+        # A select have been found
+	if(/name=hdwd/)
+	{
+	    m/name=hdwd value=\"?([^">]*)/;
+	    $hdwd = $1;
+	    m/name=listword value=\"?([^">]*)/;
+	    $listword = $1;
+	    $part=3;
+	    next;
+	}
+
+	if (s/\s*\d+\.\s*<a href=[^>]*>//)
+	{
+	    s%</a>%%;
+	    $select=0;
+	    $idx++;
+	    print "$idx - $_";
+	    chop;
+	    s/\r$//gm;
+	    push(@Options,$_);
+	    $part=3;
+	    next;
+	}
+
+	if (s/<option[^>]*>//)
+	{
+	    $select=1;
+	    $idx++;
+	    print "$idx - $_";
+	    chop;
+	    s/\r$//gm;
+	    push(@Options,$_);
+	    $part=3;
+	    next;
+	}
+
+	next if $part==23;
+
+	$part=4;
+
+	if ($idx==0)
+	{
+	    print "Got no list entries from the m-w server.\n";
+	    close (MW) || die "close: $!";
+	    exit;
+	}
+
+	if ($select)
+	{
+	    m/name=list value=\"([^\"]*)/;
+	    $list = $1;
+	}
+
+	print "\nEnter choice (1-$idx): ";
+	$choice = <STDIN>;
+	if (!(defined $choice) || $choice !~ s/(\d+).*/$1/)
+	{
+	    if (defined $choice)
+	    {
+		print "\"$choice\" is not a valid number.\n";
+	    }
+	    else
+	    {
+		print "\n";
+	    }
+	    close (MW) || die "close: $!";
+	    exit;
+	}
+	if ($choice<1 or $choice>$idx)
+	{
+	    print "$choice is not in the range 1-$idx.\n";
+	    close (MW) || die "close: $!";
+	    exit;
+	}
+	if (!$notfound && $choice == 1 && $idx>1 && $word=~/^\w+$/)
+	{
+	    print "\n\n";
+	    $skip = 1;
+	    $StartString = "Entry.*:";
+	    next;
+	}
+
+	close (MW) || die "close: $!";
+
+	if ($select)
+	{
+	    if ($notfound)
+	    {
+		$hdwd="";
+		$idx=0;
+	    }
+
+	    &MWOpen( "book=$Book\&hdwd=$hdwd\&listword=$listword\&jump="
+		     . &quote($Options[$choice-1])
+		     . "\&list=". &quote($list)
+		     );
+	}
+	else
+	{
+	    $idx=0;
+	    &MWOpen( "book=$Book\&va="
+		     . &quote($Options[$choice-1])
+		     );
+	}
+
+	$part=0;
+	$skip = 1;
+	$StartString = $Start_tag;
+
+	next;
+    }
+
+    s/<br>/\n/gi;
+
+    s/\&#(\d+);/pack("C",$1)/eg;
+    s/\&([^ ;]+);/$Quotes{$1}/eg;
+
+    if ($part==5)
+    {
+	last if m:</div:;
+	last if m:<img src="/images/pixt.gif":;
+	last if m:<\!-- end content:;
+	last if m:</?form:;
+	if (/Top 10 Search Results for /)
+	{
+	  last; # commercial at bottom of page; 
+	}
+
+	chomp;
+	s/\r$//; # chomp do not remove the \r
+
+	s:^<i>(.+?)</i>:"\n\U$1":gem; # begin with italic -> new paragraph
+	s£<b>(\s*[^\d\W]\s*)</b>(.*?<b>:)£\n  $1$2£gi; #New paragraph
+	s£<sup>(<[^>]*>)*(\d+)(<[^>]*>)*</sup>£$2<4?$Quotes{'sup'.$2}:$2 £eg;
+        s:<sup>(.*)</sup>:$1 :g;
+	if ($upper_italic)
+	{
+	  s:<i>(.+?)</i>:"\U$1":gem; #Uppercase italic
+	}
+
+	if ($more_linebreaks)
+	{
+	    s/^\s*<b>\s*(\d)/\n$1/gim; # begin with bold digit -> nl
+	    s/^(\w+( \w+(\(s\))?)?:)/\n$1/m; # colon after first word(s) -> nl
+	    s£\((\d+)\)(.*?)<b>:£\n    ($1)$2:£gi; # numbered list -> nl
+	    s/\n    \(1\)/(1)/g; # correct back first entry in numbered list
+	    s/^(\s*<[^>]*>\s*)*(1\b)/\n$2/gm; # begin with 1 -> nl
+	    s/^(\s*<[^>]*>\s*)*(-)/\n$2/gm; # begin with hypen -> nl
+	    s/^(\s*<[^>]*>\s*)*(:)/\n$2/gm; # begin with colon -> nl
+	    s/^(\s*<[^>]*>\s*)*(synonyms?\b)/\n$2:/gim;
+	    s/^(\s*<[^>]*>\s*)*((Contrasted|Related) Words?\b)/\n$2:/gim;
+	}
+	else
+	{
+	    s/^(Text:)/$1\n/;
+	}
+    }
+
+    s/<[^>]*>//g;
+
+    # Print the line
+    output_to_terminal($_);
+}
+
+if ($part < 5)
+{
+    output_to_terminal("\nWARNING:  Format of webpage not recognised.\n      This is most likely caused by a change in the webdesign on http://www.m-w.com/. Verify this by searching for some new words and organize a fix if necessary.");
+}
+print "\n\n";
+close (MW) || die "close: $!";
+
+exit;
+
+
+sub MWOpen
+{
+    my ($SendString) = @_;
+    my ($WWWebster,$port) = ("www.m-w.com",80);
+    my ($URI) = "/cgi-bin/dictionary";
+
+    my ($iaddr,$paddr,$proto);
+
+    $iaddr = inet_aton($WWWebster);
+    $paddr = sockaddr_in($port, $iaddr) || die "sockaddr_in: $!"; 
+    $proto   = getprotobyname('tcp');
+
+    socket(MW, PF_INET, SOCK_STREAM, $proto) || die "socket: $!";
+    connect(MW, $paddr) || die "connect: $!";
+
+    select((select(MW),$|=1)[0]);
+
+    print MW "POST $URI HTTP/1.0
+User-Agent: Terjes webster agent
+Host: $WWWebster
+Accept: text/html
+Content-type: application/x-www-form-urlencoded
+Content-Length: " . length($SendString) .
+"\n\n$SendString";
+}
+
+sub quote
+{
+    my ($string) = @_;
+    $string =~ s/ /\+/g;
+    $string =~ s/([^\w\+])/"\"\\\%\\U".unpack("H2",$1)."\""/eeg;
+    return $string;
+}
+
+#------------------------------------------------------------------------------
+#       output_to_terminal -- added by Jonathan Cox <jcox@interwoven.com>
+#       Wrap Webster's output so that it looks good 
+#       no matter what the terminal's current width is. 
+#------------------------------------------------------------------------------
+sub output_to_terminal
+{
+    $_=shift;
+    if ($Wchar<=0)
+    {
+	print;
+	return;
+    }
+    my @str = split /( |\n)/;
+    my $newstr='';
+    my $len=0;
+    my $w_len;
+
+    foreach my $w (@str)
+    {
+        $w_len = length($w);
+        if ($w eq "\n") { $len = -1; }
+        if (($len + $w_len)   >  $Wchar )
+        {
+            if ($w eq " ") {next;}
+            $newstr .= "\n      $w";  $len=$w_len+6;
+        }
+        else
+        {
+            $newstr .= $w;    $len = $len + $w_len;
+        }
+    }
+    print $newstr;
+}

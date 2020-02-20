@@ -1,0 +1,2737 @@
+#!/usr/bin/perl
+# This is a major re-write of the original daemon I wrote, although
+# quite a bit of code was re-used where it made sense.
+##########################################################################
+#                                                                        #
+#                       LOCAL CONFIG OPTIONS                             #
+#    These have been moved to vanprod.conf.                              #
+#    See the embedded documentation, use perldoc, or run pod2man         #
+#    as outlined in the README and then read the resulting man page      #
+#    for further details about the settings.                             #
+#                                                                        #
+##########################################################################
+
+=head1 NAME
+
+vanprod - Perl daemon to communicate with a Davis Vantage Pro weather station.
+
+=head1 SYNOPSIS
+
+vanprod [ -c <path/to/vanprod.conf> -dlnrstw ]
+
+=head1 DESCRIPTION
+
+
+B<-c /path/to/vanprod.conf>  This allows you to override the location of the configuration file.  Defaults to /etc/vanprod.conf if not present.
+
+B<-d>  Debug mode.  This is intended only for short term diagnosis of problems you may be having.  vanprod will become a daemon, but it will be EXTREMELY chatty in writing information into the syslog at the debug priority.  You may also use this in conjuction with -t for initial testing and debugging.
+
+B<-l>  Do not calculate or update loop ratio.  See comments below or in vanprod.conf for details on this value.  As of version 2.3 the daemon will calculate this value and keep it current in your configuration file unless you set this switch.
+
+B<-n>  No database updates.  vanprod will not try to load the DBI module or make any updates to a database.  Text files as described below are not affected by this option.
+
+B<-t>  Test mode.  vanprod will not become a daemon.  It will test for correct communication with the weather station, print the results on stdout and exit.
+
+B<-r>  Do not use round robin databases.
+
+B<-s> Send reduced Sea Level Pressure to Weather Underground instead of altimeter.  
+
+B<-w>  Use console provided average wind speed.  Without this switch, the daemon will calculate it's own average wind speed over a period of 90 seconds.
+
+=head1 vanprod.conf file
+
+
+B<tty = /dev/ttyS1> This is the serial port where your weather station is connected.
+
+B<facility = local0> This is the syslog facility that the daemon will use for messages.  Make sure that what you put here is configured in your syslog.conf file.
+
+B<directory = /some/path/to/weather>  This is the directory where the daemon will write the output files it generates.  Details on these files and their contents are described below.
+
+B<piddir = /var/run>  This is the directory where the daemon will write a file containing it's pid.  The name of the file is vanprod.pid.
+
+B<send_to_wu = 1>  This defines whether or not to update weather underground.  If this is set to 1 yes or true, vanprod will attempt to send data to weather underground in normal mode.  If set to 2 or rapid, rapid fire updates will be enabled.   Rapid fire will fork a persistent child process and send to weather underground every time the parent vanprod completes a data gathering loop.  In other words an update is sent every $loop_ratio seconds.  Any other values will be interpreted as false. 
+
+B<update_wu_min = 0,5,10,...>  This is a comma seperate list of the minutes past the hour that you wish to send an update to weatherunderground if you are using normal mode updates.  
+
+B<send_to_cwop = 1>  Same as above, only for APRSWXNET/CWOP.  If you are not familiar with what this is or would like info on signing up, see http://www.wxqa.com.   APRSWXNET/CWOP does not support rapid fire mode.
+
+B<update_cwop_min = 1>  CWOP updates are now coded to occur every 10 minutes if you are sending to CWOP.  This is in accordance with guidelines from the CWOP program.  Set this to the value of the minute during each 10 when you should send your updates.  Your update minute should be equal to the last digit in your CWOP ID.  For hams, use your station ID assigned to you from MADIS.  Example:  My station ID is AR536, so my setting for this value would be 6.  This will result in updates being sent to CWOP at 6, 16, 26, 36, 46, and 56 past the hour. 
+
+B<wu_id = MY_STATION>  Set this to your station id assigned to you by weather underground.
+
+B<wu_password = mypassword>   Set this to your weather underground password.
+
+B<callsign = CW9999>  Your ham callsign or CWOP ID for APRSWXNET/CWOP.  Use upper case in the value. 
+
+B<cwop_password = -1>  Your cwop password if you are a ham operator and have one.  This password allows packets coming from licensed ham operators to be validated and passed on to an RF (amateur packet radio) network by an Igate.  If you are a licensed ham and would like to enable the possibility for your weather data to be broadcast on a local packet radio network, set your passcode here.  To obtain your passcode, you may send your callsign to russell.b.chadwick@noaa.gov, or I will be happy to provide this information for you.  Again, just e-mail your callsign to me at stsander@sblan.net. (73 de N5KJT) Folks using a CW#### ID (i.e. non-hams) should leave this set to -1.  
+
+B<cwop0 cwop1 cwop2.....cwopN>  This is where you can set the order in which a connection attempt is made to the cwop servers.
+
+B<lat = 1234.56N>
+B<lon = 12345.67W>  Your latitude and longitude.  These are used for APRSWXNET/CWOP reports.  The format for latitude is exactly 4 digits followed by a decimal then 2 digits followed by a hemisphere designator.  The digits are ddmm.mm where d is degrees, m is minutes carried out to a resolution of 1/100th (.01) of a minute.  Be sure to insert leading zeros as needed.  The longitude is identical except there are 3 digits required for the degrees, so it becomes dddmm.mm.  This follows the LORAN format if you wish to find more details.  Note that the number of digits required is fixed so leading zeros are required for values less than 10 (or 100).  ACME mapper appears to have the most accurate mapping of these values if you don't happen to have a GPS handy.  If you make a format error (or change the format of the defaults) the daemon will write a warning in your syslog instead of sending to APRSWXNET/CWOP.
+
+B<bar_offset = 0>  This is the offset for the barometer expressed in millibars.  (.01 inches of mercury = .338637526 millibars)  This only affects calculations within the daemon and not the console.  Any offset you have set on the console is ignored by the daemon and needs to be set here to be seen by the daemon.  
+
+B<sensor_exclude = 0>  This variable allows you to temporarily disable a sensor or sensors from being included in updates sent to Weatherunderground and CWOP and stored in the RRDs.  This variable is used as a bitmask to exclude the various sensors.  The values for the sensors are as follows:
+
+  1 = Outdoor Temperature
+  2 = Barometer
+  4 = Wind Speed
+  8 = Wind Direction
+ 16 = Outdoor Humidity
+ 32 = Rainfall
+ 
+
+To exclude more than one sensor add the values for the sensors together.  For example:  To exclude Wind Speed and Direction set this to 12.  To exclude Temperature and Humidity set it to 17.  The setting of this variable only affects updates to WU, CWOP, and the RRDs.  It has no impact on the text files written by the daemon or the values stored in the mysql database.  
+
+B<oldobs = 7>  How many days old a dailyobs file should be to be deleted when a new day is started.  Details on what this file contains are below.  Note that this value will only be used when the daemon is running at midnight and starting a new day as part of it's own internal processes.  If you would like to keep these files forever, you can set this to -1.  The dailyobs file is typically between 70 and 75 KB for a 24 hour period.  
+
+
+B<db = mysql>  Type of database you want to use to store your daily extremes.  The daemon will store the minimum and maximum values and the time they occurred in the database.  
+
+B<db_name = weather>  The name of the database to use.
+
+B<db_user = stan>  Name of database user that can add records to the database you specified on the previous line.
+
+B<db_password = mypassword> Password for the database user described above.
+
+B<db_table = reports>  Name of database table that contains the values we track and store.  The following commands should set things up for you:
+
+   mysql> CREATE TABLE `reports` (
+   `date` DATE NOT NULL ,
+   `hi_temp` INT( 3 ) ,
+   `hi_temp_time` TIME,
+   `lo_temp` INT( 3 ) ,
+   `lo_temp_time` TIME,
+   `peak_wind` INT( 3 ) ,
+   `peak_direct` CHAR( 3 ) ,
+   `peak_time` TIME,
+   `min_wind_chill` CHAR( 3 ) ,
+   `wind_chill_time` TIME,
+   `year_rain` DECIMAL( 4, 2 ) ,
+   `max_rain_rate` DECIMAL( 4, 2 ) ,
+   `max_rain_time` TIME,
+   `max_barometer` DECIMAL( 4, 2 ) ,
+   `max_press_time` TIME,
+   `min_barometer` DECIMAL( 4, 2 ) ,
+   `min_press_time` TIME,
+   `max_humid` INT( 3 ) ,
+   `max_humid_time` TIME,
+   `min_humid` INT( 3 ) ,
+   `min_humid_time` TIME,
+   `max_dew` INT( 3 ) ,
+   `max_dew_time` TIME,
+   `min_dew` INT( 3 ) ,
+   `min_dew_time` TIME,
+   `max_heat_index` CHAR( 3 ) ,
+   `heat_index_time` TIME,
+   `daily_rain` DECIMAL( 4, 2 ) ,
+   `max_intemp` INT( 3 ) ,
+   `max_intemp_time` TIME ,
+   `min_intemp` INT( 3 ) ,
+   `min_intemp_time` TIME ,
+   `max_inhumid` INT( 3 ) ,
+   `max_inhumid_time` TIME,
+   `min_inhumid` INT( 3 ) ,
+   `min_inhumid_time` TIME,
+   `max_indew` INT( 3 ) ,
+   `max_indew_time` TIME,
+   `min_indew` INT( 3 ) ,
+   `min_indew_time` TIME,
+   `max_uv` CHAR( 3 ) ,
+   `max_uv_time` TIME,
+   `max_srad` CHAR( 5 ) ,
+   `max_srad_time` TIME,
+   PRIMARY KEY ( `date` )
+   );
+
+The routine that uploads this information to the database currently uses an sql insert command, so the ordering of the fields is important.  
+
+B<tid0 through tid7 >  This is where you can set up some meaningful strings for the up to 8 transmitters allowed with the wireless Vantage Pro.  
+
+B<alarm_interval = 300>  This controls how often messages are written to syslog and any actions defined below are taken in the event of an alarm.  This should be expressed in seconds as it will be internally adjusted by the loop ratio.  
+
+B<loop_ratio>  This the ratio of the number of passes through the data gathering loop to 1 second of real time.  This value allows the daemon to more accurately track the values that are time based in some manner.  There isn't much effect on shorter intervals like the average wind direction, but for longer intervals such as the barometer trend or 24 hour rainfall totals, the error introduced can be easily noticed. (OK, so maybe I'm a perfectionist.)
+
+B<slow>  This should be set to an integer value that represents how many seconds you need to slow the daemon down.  If your loop ratio is less than 1, I highly recommend that you set this to at least 1 so that the daemon will not make more than 1 loop per second.  Running too fast may produce unpredictable performance.
+
+B<*_q>  This is where you can set thresholds for the various "silent" alarms.  These settings are independant of the alarms set on the Vantage Pro console.
+
+B<alarm_action>  This is where you can define a script that vanprod will execute whenever an alarm threshold (silent or console) is crossed.  This is in addition to messages that will be written to your syslog.  Two arguments will be passed to this script, the designator for which value has triggered the alarm, and the current value.  Example: for a low outdoor temperature alarm, the arguments passed would be low_outtemp value.  The "designators" are simply the threshold variables without the _q on the end.  If you have the 15 minute rainfall (flash flood) alarm set on your Vantage Pro console, when this triggers, it will be sent to your script with a designator of ff.  Standard out and Standard error will be captured from this script, and any output that is captured will be written to your syslog.
+
+=cut
+
+my $VERSION = '2.5'; # our version for internet updates
+use Getopt::Std;
+my %opts = ();
+getopts('c:dlntwrs', \%opts);
+use strict;
+use Device::Davis 1.1.0;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use POSIX;
+use POSIX qw(:errno_h :fcntl_h strftime);
+use Socket qw(:DEFAULT :crlf); 
+unless($opts{r}){ use RRDs;};
+unless($opts{n}){ use DBI;};
+use Date::Calc qw(Add_Delta_Days);
+use Date::Manip qw(ParseDate UnixDate ParseDateString);
+my $ua = "";
+my $tty = "";
+my $facility = ""; 
+my $name = "vanprod"; # name of the executable for syslog and internet updates
+my $directory = ""; 
+my $piddir = ""; 
+my $wu_id = ""; 
+my $wu_password = ""; 
+my $cwop_password = -1;
+my $oldobs = 0; 
+my $db = "";
+my $db_name = ""; 
+my $db_user = ""; 
+my $db_password = "";
+my $db_table = ""; 
+my %tid = ();
+my $alarm_interval = 300;
+my $callsign = "";
+my $lat = "";
+my $lon = "";
+my @cwops = ();
+my $fd = "";  # File descriptor variable
+my $count = 0;  #counter variables
+my $bytes = "";
+my @data = ();  # Array for responses from weather station
+my $bar = "";
+my $slp = "";
+my $response = "";
+my $min_bar = "32.00";
+my $min_bar_time = "";
+my $max_bar = "28.00";
+my $max_bar_time = "";
+my $bar_offset = 0;
+my $outtemp = "";
+my $intemp = "";
+my $min_outtemp = "200";
+my $min_outtemp_time = "";
+my $max_outtemp = "-100";
+my $max_outtemp_time = "";
+my $min_intemp = "200";
+my $min_intemp_time = "";
+my $max_intemp = "-100";
+my $max_intemp_time = "";
+my $windsp = "";
+my $max_windsp = "-1";
+my $max_windsp_time = "";
+my $avgwindsp = "";
+my $sumwind = "";
+my @windspds = ();
+my $winddir = "";
+my $max_winddir = "";
+my @cosine = ();
+my @sine = ();
+my $sumcos = 0;
+my $sumsin = 0;
+my $avgwinddir = 0;
+my $compdir = "";
+my $outhum = "";
+my $min_outhum = "101";
+my $min_outhum_time = "";
+my $max_outhum = "-1";
+my $max_outhum_time = "";
+my $inhum = "";
+my $min_inhum = "101";
+my $min_inhum_time = "";
+my $max_inhum = "-1";
+my $max_inhum_time = "";
+my $rate = "0.00";
+my $max_rate = "-1";
+my $max_rate_time = "";
+my $con_rate = "";
+my $dayrain = "";
+my $monrain = "";
+my $yearrain = "";
+my $sunrise = "";
+my $sunset = "";
+my @digits = ();  # Array for making sunrise and sunset look pretty
+my $dewpt = "";
+my $max_dewpt = "-100";
+my $max_dewpt_time = "";
+my $min_dewpt = "100";
+my $min_dewpt_time = "";
+my $indewpt = "";
+my $max_indewpt = "-100";
+my $max_indewpt_time = "";
+my $min_indewpt = "100";
+my $min_indewpt_time = "";
+my $tempc = ""; # Variable for C temperature for formulas that use it
+my $ews = "";   # Variable used in dewpoint calc
+my $num1 = "";  # Variable used in dewpoint calc
+my $num2 = "";  # Variable used in dewpoint calc
+my $chill = 100;
+my $min_chill = 100;
+my $min_chill_time = "00:00:00";
+my $hi = -100;  # Heat Index
+my $max_hi = -100;
+my $max_hi_time = "00:00:00";
+my $new_extreme = 0;
+my $pid = ""; # Variable for forking to become daemon
+my $time_to_die = 0; # Flag for graceful exit
+my $hup = 0;  # Flag for graceful hup
+my $hour = ""; # Variables for time based functions
+my $minute = 0;
+my $sec = "";
+my $prev_minute = -1;
+my $wu_done = 0;  # flag
+my $cwop_done = 0;
+my %update_wu_min = ();
+my $update_cwop_min = "";
+my $index = 0;
+my $dateutc = "";  # Current date and time UTC
+my $wu_gust = 0; # Max gust between wu reports
+my $cwop_gust = 0; # Max gust between cwop reports
+my $gust = 0; # Max gust between daily obs writes
+my $db_update_done = 0; # flag
+my $new_day = 0;
+my $date = "";
+my $line = "";
+my $dbh = ""; # Database handle
+my $sth = ""; # Database statement handle
+my $month = "";
+my $day = "";
+my $year = "";
+my $datestr = "";
+my $crc = 0;
+my @rainfall = ();
+my $rainamt = 0;
+my $newrain = 0;
+my $prev_dayrain = 0;
+my $msbyte = "";
+my $lsbyte = "";
+my $clock_set = 0;
+my $trans_bat = 0;
+my $con_bat = 0;
+my $con_bat_low = 0; # flag for low battery warning
+my $con_bat_min = 4.5;
+my $trend = "";
+my @bar_vals = ();
+my $old_bar = 0;
+my $bar_diff = 0;
+my $forecasticon = "";
+my $forecastrule = "";
+my $tid_0_low = 0;
+my $tid_1_low = 0;
+my $tid_2_low = 0;
+my $tid_3_low = 0;
+my $tid_4_low = 0;
+my $tid_5_low = 0;
+my $tid_6_low = 0;
+my $tid_7_low = 0;
+my $alarm0 = 0;
+my $alarm1 = 0;
+my $alarm2 = 0;
+my $bar_fall_alarm = 0;
+my $bar_fall_q = "";
+my $bar_rise_alarm = 0;
+my $bar_rise_q = "";
+my $low_intemp_alarm = 0;
+my $low_intemp_q = "";
+my $hi_intemp_alarm = 0;
+my $hi_intemp_q = "";
+my $low_inhum_alarm = 0;
+my $low_inhum_q = "";
+my $hi_inhum_alarm = 0;
+my $hi_inhum_q = "";
+my $con_rate_alarm = 0;
+my $m15_rain_alarm = 0;
+my $rain1_q = "";
+my $rainm15_q = "";
+my $h24_rain_alarm = 0;
+my $rain24_q = "";
+my $storm_rain_alarm = 0;
+my $storm_q = "";
+my $low_outtemp_alarm = 0;
+my $low_outtemp_q = "";
+my $hi_outtemp_alarm = 0;
+my $hi_outtemp_q = "";
+my $windsp_alarm = 0;
+my $windsp_q = "";
+my $avgwindsp_alarm = 0;
+my $avgwindsp_q = "";
+my $low_outdew_alarm = 0;
+my $low_outdew_q = "";
+my $hi_outdew_alarm = 0;
+my $hi_outdew_q = "";
+my $heat_alarm = 0;
+my $heat_q = "";
+my $chill_alarm = 0;
+my $chill_q = "";
+my $stormrain = 0;
+my $bit = 0;
+my $stormstart = 0;
+my $stormyear = 0;
+my $stormmonth = 0;
+my $stormday = 0;
+my $inetaddr = "";
+my $portaddr = "";
+my $proto = "";
+my $server = "";
+my $rain24 = "0.00";
+my $rain1 = "0.00";
+my $rainm15 = "0.00";
+my @rainfall15 = ();
+my @rainfall24 = ();
+my %rain = (
+	1 => 0,
+        15 => 0,
+	24 => 0
+);
+my %configs = ();
+my $var = "";
+my $value = "";
+my $send_to_wu = 0;
+my $send_to_cwop = 0;
+my $epoch = time;
+my $now = 0;
+my $elapsed = 0;
+my $loops = 0;
+my $ratio = 1;
+my $loop_ratio = 1;
+my $slow = 0;
+my $alarm_action = "";
+my @tmp = ();
+my $uv = 0;
+my $srad = 0;
+my $max_uv = -1;
+my $max_uv_time = "";
+my $max_srad = -1;
+my $max_srad_time = "";
+my $sensor_exclude = "";
+my $oor_count = 0;
+my $oor_loops = 0;
+my $backoff = 0;
+initialize();
+if($send_to_wu eq "1" or $send_to_wu eq "2" or $send_to_wu =~ /true/i or $send_to_wu =~ /rapid/i or $send_to_wu =~ /yes/i){ 
+  use LWP;
+  $ua = new LWP::UserAgent; # For Weatherunderground
+  $ua->agent("$name/$VERSION" . $ua->agent);  #for W.U.
+  $ua->timeout(10);  # 10 second timeout
+};
+# Open the tty
+unless(-r "$tty"){die "You do not have read permission for $tty\n";};
+unless(-w "$tty"){die "You do not have write permission for $tty\n";};
+$fd = station_open($tty) or die "Cannot open $tty $!\n";
+
+=pod
+
+B<Baud Rates>
+
+The factory default baud rate for the Vantage Pro weather station is 19200.  If you need to use a different setting, you may change it in the Davis module source file, Davis.xs.
+
+=cut
+
+if($opts{t}){
+   $SIG{ALRM} = \&time_out; # set up timeout trap
+   test();
+   exit;
+};
+# Become a daemon
+$pid = fork();
+if($pid){ 
+   exit; 
+};
+if(!defined $pid){ 
+   die "Couldn't fork -- $!\n";
+};
+# Disassociate with our controlling terminal and stop being part of our
+# previous process group.
+POSIX::setsid() or die "Can't start new daemon session:  $!\n";
+# If we made it this far, we are now a daemon process
+# We should do all our reporting via syslog from now on.
+setlogsock("unix");  # talk to our local running syslogd
+# Connect up with syslogd, log $name as our process name, along with our pid
+openlog("$name", "pid", "$facility");
+# Record our pid in a file for ease in signaling.
+open(PIDFILE, ">$piddir/$name.pid") or syslog("err", "Exiting can't write pid file $piddir/$name.pid %m") and die;
+print PIDFILE $$;
+close(PIDFILE);
+syslog("info", "$name started.");
+load_values();
+if($send_to_wu eq "2" or $send_to_wu =~ /rapid/i){
+  pipe(RTUPDATER, VPD);
+  select(VPD);
+  $| = 1;
+  $pid = fork();
+  if($pid){ 
+    close(RTUPDATER);
+  }else{
+    if(!defined $pid){ 
+      syslog("notice", "Couldn't fork weather underground rapid fire submission process %m"); 
+      close(RTUPDATER);
+      die;
+    };
+    close(VPD);
+    wu_rapid();
+  };
+};
+read_bar();
+until($time_to_die == 1){ # Main loop of the daemon
+  $sec = (localtime)[0];
+  $minute = (localtime)[1];
+  $hour = (localtime)[2];
+# update the db unless the option was given to disable it.  The flag will 
+# never be set to 0 if this option is present. Also do new day init.
+   if($minute == 0 && $hour == 0 && $db_update_done == 0){ 
+      update_db(); 
+      $db_update_done = 1;
+   };
+   if($minute == 1 && $hour == 0){ $db_update_done = 0 unless $opts{n};};
+   if($minute == 0 && $hour == 0 && $new_day == 0){ start_day();};
+   if($minute == 1 && $hour == 0){ $new_day = 0; };
+   if($minute == 0 && $hour == 12 && $clock_set == 0){ set_clock();};
+   if($minute == 1 && $hour == 12){ $clock_set = 0;};
+   if($hup){ reload(); };
+   get_data(); # The data collection subroutine
+   if($send_to_wu eq "1" or $send_to_wu =~ /yes/i or $send_to_wu =~ /true/i){
+      if($update_wu_min{$minute} && $sec < 30){ # test the flag for this minute
+         update_wu() unless $wu_done;
+         $wu_gust = 0 unless $wu_done;  # reset variable for gust between reports
+         $wu_done = 1;  # set flag to indicate we're done
+      }else{
+         $wu_done = 0; # reset flag for next update
+      };
+   };
+   if($send_to_cwop eq "1" or $send_to_cwop =~ /yes/i or $send_to_cwop =~ /true/i){
+     @digits = split/(^\d)/, $minute;
+     if(!defined $digits[2]){ $digits[2] = $digits[1]; };
+     if($update_cwop_min == $digits[2] && $sec < 30){
+       update_cwop() unless $cwop_done;
+       $cwop_gust = 0 unless $cwop_done;
+       $cwop_done = 1;
+     }else{
+       $cwop_done = 0;
+     };
+   };
+};
+syslog("info", "Caught sigterm.  Dumping stacks.");
+close(DAILY);
+close(VPD);
+stack_dump();
+sub stack_dump {
+   # There seems to be a race condition where the files written here are not 
+   # written to disk in cases where the daemon is shut down an immediately 
+   # restarted or when the loop ratio is being changed and this routine and the
+   # load_values routine are called back to back.  Therefore I set $| (autoflush)
+   # here to make sure that the files exist on the disk when they are needed.
+   open(STACK, ">$directory/cosine_stack");
+   select(STACK);
+   $| = 1;
+   until($#cosine == -1){
+     $value = shift(@cosine);
+     if(!defined $value or $value eq ""){ $value = 0; };
+     print STACK "$value\n";
+   };
+   close(STACK);
+   open(STACK, ">$directory/sine_stack");
+   select(STACK);
+   $| = 1;
+   until($#sine == -1){
+     $value = shift(@sine);
+     if(!defined $value or $value eq ""){ $value = 0; };
+     print STACK "$value\n";
+   };
+   close(STACK);
+   open(STACK, ">$directory/wind_stack");
+   select(STACK);
+   $| = 1;
+   until($#windspds == -1){
+     $value = shift(@windspds);
+     if(!defined $value or $value eq ""){ $value = 0; };
+     print STACK "$value\n";
+   };
+   close(STACK);
+   open(STACK, ">$directory/bar_stack");
+   select(STACK);
+   $| = 1;
+   until($#bar_vals == -1){
+     $value = shift(@bar_vals);
+     if($value){ print STACK "$value\n"; };
+   };
+   close(STACK);
+   open(STACK, ">$directory/rain1_stack");
+   select(STACK);
+   $| = 1;
+   until($#rainfall == -1){
+     $value = shift(@rainfall);
+     if(!defined $value or $value eq ""){ $value = 0; };
+     print STACK "$value\n";
+   };
+   close(STACK);
+   open(STACK, ">$directory/rain15_stack");
+   select(STACK);
+   $| = 1;
+   until($#rainfall15 == -1){
+     $value = shift(@rainfall15);
+     if(!defined $value or $value eq ""){ $value = 0; };
+     print STACK "$value\n";
+   };
+   close(STACK);
+   open(STACK, ">$directory/rain24_stack");
+   select(STACK);
+   $| = 1;
+   until($#rainfall24 == -1){
+     $value = shift(@rainfall24);
+     if(!defined $value or $value eq ""){ $value = 0; };
+     print STACK "$value\n";
+   };
+   close(STACK);
+syslog("info", "Stacks dumped.");
+};
+syslog("info", "$name Exiting.");
+closelog();
+POSIX::close($fd);
+exit;
+sub initialize {
+   if($opts{c}){
+      open(CONF, "<$opts{c}") or die "Unable to open $opts{c} $!\n";
+   }else{
+      open(CONF, "</etc/vanprod.conf") or die "Unable to open /etc/vanprod.conf $!\n";
+   };
+   until(eof(CONF)){
+     $line = <CONF>;
+     $line =~ s/#.*//; # ignore comments
+     $line =~ s/^\s+//;  # no leading whitespace
+     $line =~ s/\s+$//;  # no trailing whitespace
+     if($line =~ m/^$/){ next; }; # ignore blank lines and go to next line if nothing left
+     chomp($line);  
+     # extract the variable -> value pairs.  Whitespace before and/or after the = 
+     # or no whitespace on either side of the = is allowed.
+     ($var, $value) = split(/\s*=\s*/, $line, 2); 
+     $configs{$var} = $value;
+   };
+   close(CONF);
+   $tty = $configs{tty};
+   $facility = $configs{facility};
+   $directory = $configs{directory};
+   $piddir = $configs{piddir};
+   $wu_id = $configs{wu_id};
+   $wu_password = $configs{wu_password};
+   $cwop_password = $configs{cwop_password};
+   $oldobs = $configs{oldobs};
+   $db = $configs{db};
+   $db_name = $configs{db_name};
+   $db_user = $configs{db_user};
+   $db_password = $configs{db_password};
+   $db_table = $configs{db_table};
+   my %tid = 
+     ( 
+     0 => "$configs{tid0}", 
+     1 => "$configs{tid1}",
+     2 => "$configs{tid2}",
+     3 => "$configs{tid3}",
+     4 => "$configs{tid4}",
+     5 => "$configs{tid5}",
+     6 => "$configs{tid6}",
+     7 => "$configs{tid7}"
+     );
+   $alarm_interval = $configs{alarm_interval};
+   $callsign = uc($configs{callsign});
+   $lat = uc($configs{lat});
+   $lon = uc($configs{lon});
+   $send_to_wu = $configs{send_to_wu};
+   @tmp = split /,/, $configs{update_wu_min};
+   foreach $value (@tmp){
+     $update_wu_min{$value} = 1;
+   };
+   $send_to_cwop = $configs{send_to_cwop};
+   $update_cwop_min = $configs{update_cwop_min};
+   $index = 0;
+   @cwops = ();
+   while(defined $configs{"cwop$index"}){
+     push(@cwops, $configs{"cwop$index"});
+     $index++;
+   };
+   $loop_ratio = $configs{loop_ratio};
+   $slow = sprintf("%.0f", $configs{slow});
+   $bar_offset = $configs{bar_offset};
+   $sensor_exclude = $configs{sensor_exclude};
+   $bar_fall_q = $configs{bar_fall_q};
+   $bar_rise_q = $configs{bar_rise_q};
+   $low_intemp_q = $configs{low_intemp_q};
+   $hi_intemp_q = $configs{hi_intemp_q};
+   $low_inhum_q = $configs{low_inhum_q};
+   $hi_inhum_q = $configs{hi_inhum_q};
+   $rain1_q = $configs{rain1_q};
+   $rainm15_q = $configs{rainm15_q};
+   $rain24_q = $configs{rain24_q};
+   $storm_q = $configs{storm_q};
+   $low_outtemp_q = $configs{low_outtemp_q};
+   $hi_outtemp_q = $configs{hi_outtemp_q};
+   $windsp_q = $configs{windsp_q};
+   $avgwindsp_q = $configs{avgwindsp_q};
+   $low_outdew_q = $configs{low_outdew_q};
+   $hi_outdew_q = $configs{hi_outdew_q};
+   $heat_q = $configs{heat_q};
+   $chill_q = $configs{chill_q};
+   $alarm_action = $configs{alarm_action};
+   $date = strftime "%m.%d.%Y", localtime time;
+   open(DAILY, ">>$directory/dailyobs.$date") or die "Cannot write to daily observations file $directory/dailyobs.$date $!\n";
+   # Trap signals and handle them gracefully
+   $SIG{INT} = \&sigterm;
+   $SIG{USR1} = 'IGNORE';
+   $SIG{TERM} = \&sigterm;
+   $SIG{HUP} = \&hup;
+   $SIG{CHLD} = 'IGNORE';
+   $SIG{ALRM} = \&time_out; # set up timeout trap
+   $alarm_interval = sprintf("%d", ($alarm_interval / $loop_ratio));
+   $#cosine = sprintf("%d", (89 / $loop_ratio));
+   $#sine = sprintf("%d", (89 / $loop_ratio));
+   $#windspds = sprintf("%d", (89 / $loop_ratio));
+   $#bar_vals = sprintf("%d", (10799 / $loop_ratio));
+   $#rainfall = sprintf("%d", (3599 / $loop_ratio));
+   $#rainfall15 = sprintf("%d", (899 / $loop_ratio));
+   $#rainfall24 = sprintf("%d", (86399 / $loop_ratio));
+   unless($opts{r}){ rrd_check(); };
+   $oor_loops = 0;
+}; # end initialize
+sub reload {
+   syslog("info", "Reload called because of either a loop ratio change or HUP signal.");
+   stack_dump();
+   initialize();
+   load_values();
+   $hup = 0;
+};
+sub hup {
+  $hup = 1;
+}
+sub load_values {
+   chdir($directory);
+   if($opts{n}){ 
+       $db_update_done = 1; # disable db updates if option is set
+   };
+   # Load previous extreme values that were stored if any
+   $date = strftime "%m.%d.%Y", localtime time;
+   if(-e "$directory/extremes.$date"){
+      if($opts{d}){
+         print "Initializing variables with values from $directory/extremes.$date\n"; 
+      };
+      open(EXTREMES, "<$directory/extremes.$date") or syslog("info", "Cannot read $directory/extremes.$date %m");
+      $line = <EXTREMES>;
+      chomp($line);
+      @data = split /,/, $line;
+      $min_bar = $data[0];
+      $min_bar_time = $data[1];
+      $max_bar = $data[2];
+      $max_bar_time = $data[3];
+      $min_outtemp = $data[4];
+      $min_outtemp_time = $data[5];
+      $max_outtemp = $data[6];
+      $max_outtemp_time = $data[7];
+      $max_windsp = $data[8];
+      $max_winddir = $data[9];
+      $max_windsp_time = $data[10];
+      $min_outhum = $data[11];
+      $min_outhum_time = $data[12];
+      $max_outhum = $data[13];
+      $max_outhum_time = $data[14];
+      $min_dewpt = $data[15];
+      $min_dewpt_time = $data[16];
+      $max_dewpt = $data[17];
+      $max_dewpt_time = $data[18];
+      $min_chill = $data[19];
+      if($min_chill eq "--") { 
+         $min_chill = 100; 
+      };
+      $min_chill_time = $data[20];
+      $max_hi = $data[21];
+      if($max_hi eq "--"){ 
+         $max_hi = -100; 
+      };
+      $max_hi_time = $data[22];
+      $max_rate = $data[23];
+      $max_rate_time = $data[24];
+      $prev_dayrain = sprintf("%.2f", ($data[25] * 100));
+      $yearrain = $data[26];
+      $min_intemp = $data[27];
+      $min_intemp_time = $data[28];
+      $max_intemp = $data[29];
+      $max_intemp_time = $data[30];
+      $min_inhum = $data[31];
+      $min_inhum_time = $data[32];
+      $max_inhum = $data[33];
+      $max_inhum_time = $data[34];
+      $min_indewpt = $data[35];
+      $min_indewpt_time = $data[36];
+      $max_indewpt = $data[37];
+      $max_indewpt_time = $data[38];
+      $rain24 = $data[39];
+      $rain1 = $data[40];
+      $max_uv = $data[41];
+      $max_uv_time = $data[42];
+      $max_srad = $data[43];
+      $max_srad_time = $data[44];
+      close(EXTREMES);
+   }; # end if
+   if(-e "$directory/cosine_stack"){
+     open(STACK, "<$directory/cosine_stack");
+     until(eof(STACK)){
+       $line = <STACK>;
+       chomp($line);
+       shift(@cosine);
+       push(@cosine, $line);
+     };
+     close(STACK);
+     $sumcos = 0;
+     foreach $value (@cosine){ $sumcos += $value; };
+     unlink("$directory/cosine_stack");
+   } else { 
+      syslog("info", "$directory/cosine_stack file does not exist");
+   };
+   if(-e "$directory/sine_stack"){
+     open(STACK, "<$directory/sine_stack");
+     until(eof(STACK)){
+       $line = <STACK>;
+       chomp($line);
+       shift(@sine);
+       push(@sine, $line);
+     };
+     close(STACK);
+     $sumsin = 0;
+     foreach $value (@sine){ $sumsin += $value; };
+     unlink("$directory/sine_stack");
+   } else {
+      syslog("info", "$directory/sine_stack file does not exist");
+   };
+   if(-e "$directory/wind_stack"){
+     open(STACK, "<$directory/wind_stack");
+     until(eof(STACK)){
+       $line = <STACK>;
+       chomp($line);
+       shift(@windspds);
+       push(@windspds, $line);
+     };
+     close(STACK);
+     $sumwind = 0;
+     foreach $value (@windspds){ $sumwind += $value; };
+     unlink("$directory/wind_stack");
+   } else { 
+      syslog("info", "$directory/wind_stack file does not exist");
+   };
+   if(-e "$directory/bar_stack"){
+     open(STACK, "<$directory/bar_stack");
+     until(eof(STACK)){
+       $line = <STACK>;
+       chomp($line);
+       shift(@bar_vals);
+       push(@bar_vals, $line);
+     };
+     close(STACK);
+     unlink("$directory/bar_stack");
+   } else { 
+      syslog("info", "$directory/bar_stack file does not exist");
+   };
+   if(-e "$directory/rain1_stack"){
+     open(STACK, "<$directory/rain1_stack");
+     until(eof(STACK)){
+       $line = <STACK>;
+       chomp($line);
+       shift(@rainfall);
+       push(@rainfall, $line);
+     };
+     close(STACK);
+     $rain{1} = 0;
+     foreach $value (@rainfall){
+       if($value){
+         $count = 0;
+         while($count < $value){ $rain{1}++; $count++;};
+       };
+     $rate = sprintf("%.2f", ($rain{1} / 100));
+     $rain1 = sprintf("%.2f", ($rain{1} / 100));
+     };
+     unlink("$directory/rain1_stack");
+   } else { 
+      syslog("info", "$directory/rain1_stack file does not exist");
+   };
+   if(-e "$directory/rain15_stack"){
+     open(STACK, "<$directory/rain15_stack");
+     until(eof(STACK)){
+       $line = <STACK>;
+       chomp($line);
+       shift(@rainfall15);
+       push(@rainfall15, $line);
+     };
+     close(STACK);
+     $rain{15} = 0;
+     foreach $value (@rainfall15){
+       if($value){
+         $count = 0;
+         while($count < $value){ $rain{15}++; $count++;};
+       };
+     $rainm15 = sprintf("%.2f", ($rain{15} / 100));
+     };
+     unlink("$directory/rain15_stack");
+   }else{ syslog("info", "$directory/rain15_stack file does not exist");};
+   if(-e "$directory/rain24_stack"){
+     open(STACK, "<$directory/rain24_stack");
+     until(eof(STACK)){
+       $line = <STACK>;
+       chomp($line);
+       shift(@rainfall24);
+       push(@rainfall24, $line);
+     };
+     close(STACK);
+     $rain{24} = 0;
+     foreach $value (@rainfall24){
+       if($value){
+         $count = 0;
+         while($count < $value){ $rain{24}++; $count++;};
+       };
+     $rain24 = sprintf("%.2f", ($rain{24} / 100));
+     };
+     unlink("$directory/rain24_stack");
+   } else { 
+      syslog("info", "$directory/rain24_stack file does not exist");
+   };
+   syslog("info", "Stacks loaded.");
+}; # end load_values
+
+=pod
+
+B<Signals>
+
+B<INT> or B<TERM> will cause the daemon to exit gracefully.
+
+B<HUP> Will cause the daemon to re-initialize.  (re-read the values from vanprod.conf, the extremes file, and dump and reload it's stacks.
+
+=cut
+
+sub time_out {
+   # Cause subroutine to die in response to alarm, which allows jumping back into
+   # script at line following close of eval block.
+   if($opts{d}) {
+      syslog("debug", "Received SIGALM");
+   };
+   die "Time out exceeded.\n";
+};
+sub sigterm {   # Set a flag to gracefully exit
+   $time_to_die = 1;
+};
+sub test {
+   print "Weather station should be connected to $tty\n";
+   $count = 0;
+   wake_up();
+   print "Sending TEST\n";
+   $bytes = put_string($fd, "TEST\n");
+   if($opts{d}){print "Wrote $bytes bytes to $tty\n"; };
+   $data[0] = get_char($fd); # \n character
+   $data[1] = get_char($fd); # \r character
+   $data[2] = get_char($fd);
+   $data[3] = get_char($fd);
+   $data[4] = get_char($fd);
+   $data[5] = get_char($fd);
+   $data[6] = get_char($fd); # \n character
+   $data[7] = get_char($fd); # \r character
+   if($opts{d}){print "Received @data from $tty\n"; };
+   my $response = pack("C*", $data[2], $data[3], $data[4], $data[5]);
+   print "Received $response.  That is a ";
+   if($response eq 'TEST'){
+   	print "correct response.\n";
+   }else{
+   	print "unexpected or incorrect response.\n";
+   };
+};
+sub wake_up {
+   POSIX::tcflush($fd, TCIOFLUSH);
+   if($count > 3){ # Connection error condition
+      if(-e "$piddir/$name.pid"){  # if we are a daemon
+         syslog("err", "Console connection error.  Closing and re-opening serial port.");
+         POSIX::close($fd);
+         $fd = station_open($tty);
+         sleep(2);
+         $count = 0; # reset error condition for next series of tries
+         wake_up();
+      } else {  # we are not a daemon
+         die "Connection error.\n";
+      };
+   };
+   $bytes = put_string($fd, "\n");
+   if($opts{d}) {
+      if(-e "$piddir/$name.pid"){  # if we are a daemon
+         syslog("debug", "Wrote $bytes bytes to $tty");
+      } else {
+         print "Wake up wrote $bytes bytes to $tty\n";
+      };
+   };
+   @data = ();
+   eval{
+      alarm(2);  # 2 second timeout
+      $data[0] = get_char($fd);
+      $data[1] = get_char($fd);
+      alarm(0);  # reset timeout
+   };
+   if($@ =~ /Time out/) {
+      $count++;
+      wake_up();
+   };
+   if($opts{d}) {
+      if(-e "$piddir/$name.pid"){  # if we are a daemon
+         syslog("debug", "Wake up returned @data"); 
+      } else {
+         print "Wake up returned @data\n";
+      };
+   };
+   if($data[0] == 10 && $data[1] == 13) { # Test for valid responses
+      POSIX::tcflush($fd, TCIOFLUSH);
+      return;
+   } else { # Response was not what was expected so try again
+      $count++;
+      wake_up();
+   };
+};
+sub wu_rapid{ # subroutine for weatherunderground rapid fire mode
+   my $loop_count = 1; 
+   my $rtfreq = 0;
+   until(eof(RTUPDATER)){
+     $line = <RTUPDATER>;
+     chomp($line);
+     ($dateutc,$avgwinddir,$avgwindsp,$gust,$outhum,$outtemp,$rate,$dayrain,$bar,$dewpt,$loop_ratio,$sensor_exclude) = split /,/, $line;
+     if($rtfreq < 2.5){
+       $rtfreq = $loop_ratio * $loop_count;
+       $loop_count++;
+     };
+     if($rtfreq < 2.5){ next; };
+     my $wu_bar = sprintf("%.2f", $bar);
+     my $url = "http://rtupdate.wunderground.com/weatherstation/updateweatherstation.php?action=updateraw&ID=$wu_id&PASSWORD=$wu_password&dateutc=$dateutc";
+     unless($sensor_exclude & 1){ $url .= "&tempf=$outtemp"; };
+     unless($sensor_exclude & 2){ $url .= "&baromin=$wu_bar"; };
+     unless($sensor_exclude & 4){ $url .= "&windspeedmph=$avgwindsp&windgustmph=$gust"; };
+     unless($sensor_exclude & 8){ $url .= "&winddir=$avgwinddir"; };
+     unless($sensor_exclude & 16){ $url .= "&humidity=$outhum&dewptf=$dewpt"; };
+     unless($sensor_exclude & 32){ $url .= "&rainin=$rate&dailyrainin=$dayrain"; };
+     $url .= "&softwaretype=$name-$VERSION&realtime=1&rtfreq=$rtfreq";
+     eval{
+        alarm(15); # fifteen second timeout
+        my $req = new HTTP::Request GET =>"$url";
+        my $res = $ua->request($req);
+        if ($res->is_success) {
+          if($opts{d}){syslog("debug", "Weatherunderground upload successful.");};
+        } else {
+          my $response = $res->content;
+          syslog("notice", "Weatherunderground upload failed.  $response");
+        };
+     };
+     alarm(0);
+     if($@ =~ /Time out/){ syslog("notice", "Weatherunderground upload failed.  $@"); };
+     $loop_count = 1;
+     $rtfreq = 0;
+   };
+   close(RTUPDATER);
+   exit 0;
+};
+sub update_wu {  # Update weatherunderground 
+   # This subroutine forks it own process after grabbing the current values of the
+   # variables expected to change.  This boosts overall performance of the daemon
+   my $avgwinddir = $avgwinddir;
+   my $avgwindsp = $avgwindsp;
+   my $wu_gust = $wu_gust;
+   my $outhum = $outhum;
+   my $outtemp = $outtemp;
+   my $rate = $rate;
+   my $dayrain = $dayrain;
+   my @tmp = ();
+   $tmp[0] = $bar;
+   my $bar = sprintf("%.2f", $bar);
+   if($opts{s}){ $bar = sprintf("%.2f", $slp); };
+   my $dewpt = $dewpt;
+   my $rain1 = $rain1;
+   my $rain24 = $rain24;
+   my $pid = fork();
+   if($pid){ return; };
+   if(!defined $pid){ syslog("notice", "Couldn't fork update_wu routine %m");};
+   my $dateutc = strftime "%Y-%m-%d %H:%M:%S", gmtime time;
+   my $url = "http://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?action=updateraw&ID=$wu_id&PASSWORD=$wu_password&dateutc=$dateutc";
+   unless($sensor_exclude & 1){ $url .= "&tempf=$outtemp"; };
+   unless($sensor_exclude & 2){ $url .= "&baromin=$bar"; };
+   unless($sensor_exclude & 4){ $url .= "&windspeedmph=$avgwindsp&windgustmph=$wu_gust"; };
+   unless($sensor_exclude & 8){ $url .= "&winddir=$avgwinddir"; };
+   unless($sensor_exclude & 16){ $url .= "&humidity=$outhum&dewptf=$dewpt"; };
+   unless($sensor_exclude & 32){ $url .= "&rainin=$rate&dailyrainin=$dayrain"; };
+   $url .= "&softwaretype=$name-$VERSION";
+   eval{
+      alarm(15); # fifteen second timeout
+      my $req = new HTTP::Request GET =>"$url";
+      my $res = $ua->request($req);
+      if ($res->is_success) {
+        if($opts{d}){syslog("debug", "Weatherunderground upload successful.");};
+      } else {
+        my $response = $res->content;
+        syslog("notice", "Weatherunderground upload failed.  $response");
+      };
+      };
+   alarm(0);
+   if($@ =~ /Time out/){ syslog("notice", "Weatherunderground upload failed.  $@"); };
+   if($pid == 0){ exit;}; # exit only if we are a child process else return
+};
+sub update_cwop { # Update CWOP
+   # This subroutine forks it own process after grabbing the current values of the
+   # variables expected to change.  This boosts overall performance of the daemon
+   my $avgwinddir = $avgwinddir;
+   my $avgwindsp = $avgwindsp;
+   my $cwop_gust = $cwop_gust;
+   my $outhum = $outhum;
+   my $outtemp = $outtemp;
+   my $rate = $rate;
+   my $dayrain = $dayrain;
+   my @tmp = ();
+   $tmp[0] = $bar;
+   my $dewpt = $dewpt;
+   my $rain1 = $rain1;
+   my $rain24 = $rain24;
+   my $pid = fork();
+   if($pid){ return; };
+   if(!defined $pid){ syslog("notice", "Couldn't fork update_cwop routine %m");};
+   if($lat !~ m/\d\d\d\d\.\d\d[NS]/ or $lon !~ m/\d\d\d\d\d\.\d\d[EW]/){ 
+     syslog("warning", "You have an error in your latitude and/or longitude entry.  Data not sent to APRSWXNET/CWOP.");
+     if($pid == 0){
+       exit;  # exit only if we are a child process else return
+     } else{
+       return;
+     };
+   };
+   my @time = gmtime();
+   my $min = $time[1];
+   my $hour = $time[2];
+   my $day = $time[3];
+   my $response = "";
+   $outtemp = sprintf("%.0f", $outtemp);
+   $bar = sprintf("%.0f", ($tmp[0] * 338.637526));  # convert to millibars
+   $rain1 = $rain1 * 100;
+   $rain24 = $rain24 * 100;
+   $dayrain = $dayrain * 100;
+   if($outhum == 100) { $outhum = 0; }; # Set outhum to 0 if 100%
+   foreach $server (@cwops){
+      my $packet = "";
+      eval{
+         $inetaddr = inet_aton($server) or die "Unable to get address for $server\n";
+         $portaddr = sockaddr_in(14580,$inetaddr);
+         $proto = getprotobyname('tcp');
+         socket(CWOP, AF_INET, SOCK_STREAM,$proto) or die "Unable to open socket: $!\n";
+         alarm(15);
+         connect(CWOP, $portaddr) or die "Unable to connect to $server. $!\n";
+         $response = <CWOP>;
+         alarm(0);
+         if($response =~ /Port full/){
+           syslog("notice", "$server reports that all the ports are full.  Trying next server.");
+           close(CWOP);
+           next;
+         };
+         unless($response =~ /javAPRSSrvr/){ die "Unexpected response at connection, \'$response\', from $server.  Trying next server.\n"; };
+         alarm(30);
+         if($cwop_password > 0){
+           send(CWOP, "user $callsign pass $cwop_password vers $name $VERSION $CRLF", MSG_EOR);
+           $response = <CWOP>;
+           unless($response =~ /# logresp/){ die "Unexpected response to login, \'$response\', from $server.  Trying next server.\n"; };
+           $packet = sprintf('%s>APRS,TCPIP*:', $callsign);
+         }else{
+           send(CWOP, "user $callsign pass -1 vers $name $VERSION $CRLF", MSG_EOR);
+           $response = <CWOP>;
+           unless($response =~ /# logresp/){ die "Unexpected response to login, \'$response\', from $server.  Trying next server.\n"; };
+           $packet = sprintf('%s>APRS,TCPXX*:', $callsign);
+         };
+         alarm(0);
+         $packet .= sprintf('@%02d%02d%02dz%s/%s', $day, $hour, $min, $lat, $lon);
+         unless($sensor_exclude & 8){ 
+           $packet .= sprintf('_%03d', $avgwinddir)
+         }else{
+           $packet .= "_..." 
+         };
+         unless($sensor_exclude & 4){ 
+           $packet .= sprintf('/%03dg%03d', $avgwindsp, $cwop_gust); 
+         }else{
+           $packet .= "/...g...";
+         };
+         unless($sensor_exclude & 1){ 
+           $packet .= sprintf('t%03d', $outtemp); 
+         }else{
+           $packet .= "t...";
+         };
+         unless($sensor_exclude & 32){ 
+           $packet .= sprintf('r%03dp%03dP%03d', $rain1, $rain24, $dayrain); 
+         };
+         unless($sensor_exclude & 2){ 
+           $packet .= sprintf('b%05d', $bar); 
+         };
+         unless($sensor_exclude & 16){ 
+           $packet .= sprintf('h%02d', $outhum); 
+         };
+         $packet .= sprintf('.lvpd%s', $CRLF);
+         send(CWOP, $packet, MSG_EOR) or die "Network error  $!\n";
+         close(CWOP);
+         };
+         if($@ =~ /^Unable to/){
+           syslog("notice", "$@");
+           next;
+         };
+         if($@ =~ /^Unexpected response/){
+           syslog("notice", "$@");
+           close(CWOP);
+           next;
+         };
+         if($@ =~ /Time out/){
+           syslog("notice", "$server does not seem to be responding. $@\n");
+           close(CWOP);
+           next;
+         };
+         if($@ =~ /Network error/){
+           syslog("notice", "Error sending packet to $server $@");
+           close(CWOP);
+           next;
+         };
+         if($pid == 0){ 
+           exit;  # exit only if we are a child process else return
+         } else{ 
+           return; 
+         };
+      };
+    syslog("notice", "Unable to connect with any APRSWXNET/CWOP servers");
+if($pid == 0){ exit;}; # exit only if we are a child process else return
+};
+sub start_day{
+# Close out daily observations file, and open new one for current day.
+# Delete current obs file from previous day now that we are at or past midnight.
+# Also delete dailyobs file from $oldobs days ago.
+   $datestr = UnixDate($date, "%m.%d.%Y");  #reformat date to match what is on file names.
+   unlink("$directory/currentobs.$datestr") or syslog("notice", "Cannot remove old current observations file $directory/currentobs.$datestr %m");
+   unlink("$directory/extremes.$datestr") or syslog("notice", "Cannot remove old extremes file $directory/extremes.$datestr %m");
+   close(DAILY);
+   $date = strftime "%m.%d.%Y", localtime time;
+   open(DAILY, ">$directory/dailyobs.$date") or syslog("notice", "Cannot create daily observations file $directory/dailyobs.$date %m");
+   # Remove dailyobs file from $oldobs days ago
+   unless($oldobs == -1){
+      ($year, $month, $day) = Add_Delta_Days(((localtime)[5] + 1900), ((localtime)[4] + 1), (localtime)[3], -$oldobs);
+      $date = ParseDate("$year $month $day");
+      $datestr = UnixDate($date, "%m.%d.%Y");
+      unlink("$directory/dailyobs.$datestr") or syslog("notice", "Cannot remove old daily observations file $directory/dailyobs.$datestr %m");
+   };
+   # Reset date variable to today 
+   $date = strftime "%m.%d.%Y", localtime time;
+   # Reset min and max values so current values next loop will be our starting
+   # point
+   $min_bar = 32.00;
+   $max_bar = 28.00;
+   $min_outtemp = 200;
+   $max_outtemp = -100;
+   $max_windsp = -1;
+   $min_outhum = 101;
+   $max_outhum = -1;
+   $min_dewpt = 200;
+   $max_dewpt = -100;
+   $min_chill = 100;
+   $min_chill_time = "00:00:00";
+   $max_hi = -100;
+   $max_hi_time = "00:00:00";
+   $max_rate = -1;
+   $min_intemp = 200;
+   $max_intemp = -100;
+   $min_inhum = 101;
+   $max_inhum = -1;
+   $min_indewpt = 200;
+   $max_indewpt = -100;
+   $max_uv = -1;
+   $max_srad = -1;
+   # set flag 
+   $new_day = 1;
+   if($opts{d}){syslog("debug", "Initialized new day");};
+};
+sub set_clock{
+# I had originally included this as part of the new day routine, then I discovered
+# that the act of setting the time at midnight apparently interfered with the station
+# console beginning a new day correctly.
+# syncronize weather station time with computer's time
+   wake_up();
+   $sec = (localtime)[0];
+   $minute = (localtime)[1];
+   $hour = (localtime)[2];
+   $year = (localtime)[5];
+   $month = ((localtime)[4] + 1);
+   $day = (localtime)[3];
+   # Calculate the crc
+   $crc = crc_accum($crc, $sec);
+   $crc = crc_accum($crc, $minute);
+   $crc = crc_accum($crc, $hour);
+   $crc = crc_accum($crc, $day);
+   $crc = crc_accum($crc, $month);
+   $crc = crc_accum($crc, $year);
+   $msbyte = $crc >> 8;
+   $lsbyte = $crc << 24;
+   $lsbyte = $lsbyte >> 24;
+   $bytes = put_string($fd, "SETTIME\n");
+   if($opts{d}){ syslog("debug", "Wrote $bytes bytes to $tty for SETTIME"); };
+   @data = ();
+   eval{
+      alarm(2);  # 2 second timeout
+      $data[0] = get_char($fd);
+      alarm(0);  # reset timeout
+   }; # end eval
+   if($@ =~ /Time out/){
+           syslog("notice", "Serial port timeout waiting for ack to SETTIME command.");
+   };
+   if($data[0] == 6){
+      POSIX::tcflush($fd, TCIOFLUSH);
+      $bytes = 0;
+      $bytes += put_unsigned($fd, $sec);
+      $bytes += put_unsigned($fd, $minute);
+      $bytes += put_unsigned($fd, $hour);
+      $bytes += put_unsigned($fd, $day);
+      $bytes += put_unsigned($fd, $month);
+      $bytes += put_unsigned($fd, $year);
+      $bytes += put_unsigned($fd, $msbyte);
+      $bytes += put_unsigned($fd, $lsbyte);
+      $bytes += put_string($fd, "\n");
+      if($opts{d}){ 
+         syslog("debug", "Wrote $bytes bytes to $tty for time values"); 
+      };
+      @data = ();
+      eval{
+         alarm(2);  # 2 second timeout
+         $data[0] = get_char($fd);
+         alarm(0);  # reset timeout
+      }; # end eval
+      if($@ =~ /Time out/){
+              syslog("notice", "Serial port timeout waiting for ack to SETTIME values.");
+      };
+      if($data[0] == 6){
+              syslog("info", "Weather station time sync'd with system time.");
+      }else{
+              syslog("notice", "Unable to sync weather station time with system.  Received a response of $data[0] from station.");
+      };
+   }else{
+      syslog("notice", "Unable to attempt time sync.  No ack to SETTIME command received from station.");
+   };
+   $clock_set = 1;  # set this flag so we only make 1 attempt per 24 hours.  
+   POSIX::tcflush($fd, TCIOFLUSH);
+};
+sub update_db{   # update mysql database
+# this subroutine will fork into a child process after grabbing the values
+# of the variables that are expected to change.  
+my $min_outtemp = $min_outtemp;
+my $min_outtemp_time = $min_outtemp_time;
+my $max_outtemp = $max_outtemp;
+my $max_outtemp_time = $max_outtemp_time;
+my $min_dewpt = $min_dewpt;
+my $max_dewpt = $max_dewpt;
+my $min_chill = $min_chill;
+if($min_chill == 100){ $min_chill = "--"; };
+my $max_hi = $max_hi;
+if($max_hi == -100){ $max_hi = "--"; };
+my $max_windsp = $max_windsp;
+my $max_winddir = $max_winddir;
+my $max_windsp_time = $max_windsp_time;
+my $min_chill_time = $min_chill_time;
+my $yearrain = $yearrain;
+my $max_rate = $max_rate;
+my $max_rate_time = $max_rate_time;
+my $max_bar = sprintf("%.2f", $max_bar);
+my $max_bar_time = $max_bar_time;
+my $min_bar = sprintf("%.2f", $min_bar);
+my $min_bar_time = $min_bar_time;
+my $max_outhum = $max_outhum;
+my $max_outhum_time = $max_outhum_time;
+my $min_outhum = $min_outhum;
+my $min_outhum_time = $min_outhum_time;
+my $max_dewpt_time = $max_dewpt_time;
+my $min_dewpt_time = $min_dewpt_time;
+my $max_hi_time = $max_hi_time;
+my $dayrain = $dayrain;
+my $min_intemp = $min_intemp;
+my $min_intemp_time = $min_intemp_time;
+my $max_intemp = $max_intemp;
+my $max_intemp_time = $max_intemp_time;
+my $min_indewpt = $min_indewpt;
+my $max_indewpt = $max_indewpt;
+my $max_inhum = $max_inhum;
+my $max_inhum_time = $max_inhum_time;
+my $min_inhum = $min_inhum;
+my $min_inhum_time = $min_inhum_time;
+my $max_indewpt_time = $max_indewpt_time;
+my $min_indewpt_time = $min_indewpt_time;
+my $max_uv = $max_uv;
+my $max_uv_time = $max_uv_time;
+my $max_srad = $max_srad;
+my $max_srad_time = $max_srad_time;
+if($max_uv == 255){ $max_uv = "--"; };
+if($max_srad == 32767){ $max_srad = "--"; };
+my $pid = fork();
+if($pid){ return; };
+if(!defined $pid){ syslog("notice", "Couldn't fork update_db routine %m");};
+# get yesterdays date and format it for the database
+($year, $month, $day) = Add_Delta_Days(((localtime)[5] + 1900), ((localtime)[4] + 1), (localtime)[3], -1);
+my $date = ParseDate("$year $month $day");
+my $datestr = UnixDate($date, "%Y-%m-%d");
+# round values to nearest integer
+$min_outtemp = sprintf("%.0f", $min_outtemp);
+$max_outtemp = sprintf("%.0f", $max_outtemp);
+$min_dewpt = sprintf("%.0f", $min_dewpt);
+$max_dewpt = sprintf("%.0f", $max_dewpt);
+$min_intemp = sprintf("%.0f", $min_intemp);
+$max_intemp = sprintf("%.0f", $max_intemp);
+$min_indewpt = sprintf("%.0f", $min_indewpt);
+$max_indewpt = sprintf("%.0f", $max_indewpt);
+$min_chill = sprintf("%.0f", $min_chill) unless($min_chill eq "--");
+$max_hi = sprintf("%.0f", $max_hi) unless($max_hi eq "--");
+eval{
+$dbh = DBI->connect("DBI:$db:$db_name","$db_user","$db_password",{
+        PrintError => 0,
+        RaiseError => 1});
+# prepare variables for database entry
+$datestr = $dbh->quote($datestr);
+$max_outtemp = $dbh->quote($max_outtemp);
+$max_outtemp_time = $dbh->quote($max_outtemp_time);
+$min_outtemp = $dbh->quote($min_outtemp);
+$min_outtemp_time = $dbh->quote($min_outtemp_time);
+$max_windsp = $dbh->quote($max_windsp);
+$max_winddir = $dbh->quote($max_winddir);
+$max_windsp_time = $dbh->quote($max_windsp_time);
+$min_chill = $dbh->quote($min_chill);
+$min_chill_time = $dbh->quote($min_chill_time);
+$yearrain = $dbh->quote($yearrain);
+$max_rate = $dbh->quote($max_rate);
+$max_rate_time = $dbh->quote($max_rate_time);
+$max_bar = $dbh->quote($max_bar);
+$max_bar_time = $dbh->quote($max_bar_time);
+$min_bar = $dbh->quote($min_bar);
+$min_bar_time = $dbh->quote($min_bar_time);
+$max_outhum = $dbh->quote($max_outhum);
+$max_outhum_time = $dbh->quote($max_outhum_time);
+$min_outhum = $dbh->quote($min_outhum);
+$min_outhum_time = $dbh->quote($min_outhum_time);
+$max_dewpt = $dbh->quote($max_dewpt);
+$max_dewpt_time = $dbh->quote($max_dewpt_time);
+$min_dewpt = $dbh->quote($min_dewpt);
+$min_dewpt_time = $dbh->quote($min_dewpt_time);
+$max_hi = $dbh->quote($max_hi);
+$max_hi_time = $dbh->quote($max_hi_time);
+$dayrain = $dbh->quote($dayrain);
+$max_intemp = $dbh->quote($max_intemp);
+$max_intemp_time = $dbh->quote($max_intemp_time);
+$min_intemp = $dbh->quote($min_intemp);
+$min_intemp_time = $dbh->quote($min_intemp_time);
+$max_inhum = $dbh->quote($max_inhum);
+$max_inhum_time = $dbh->quote($max_inhum_time);
+$min_inhum = $dbh->quote($min_inhum);
+$min_inhum_time = $dbh->quote($min_inhum_time);
+$max_indewpt = $dbh->quote($max_indewpt);
+$max_indewpt_time = $dbh->quote($max_indewpt_time);
+$min_indewpt = $dbh->quote($min_indewpt);
+$min_indewpt_time = $dbh->quote($min_indewpt_time);
+$max_uv = $dbh->quote($max_uv);
+$max_uv_time = $dbh->quote($max_uv_time);
+$max_srad = $dbh->quote($max_srad);
+$max_srad_time = $dbh->quote($max_srad_time);
+$sth = $dbh->prepare("insert into $db_table values ($datestr,$max_outtemp,$max_outtemp_time,$min_outtemp,$min_outtemp_time,$max_windsp,$max_winddir,$max_windsp_time,$min_chill,$min_chill_time,$yearrain,$max_rate,$max_rate_time,$max_bar,$max_bar_time,$min_bar,$min_bar_time,$max_outhum,$max_outhum_time,$min_outhum,$min_outhum_time,$max_dewpt,$max_dewpt_time,$min_dewpt,$min_dewpt_time,$max_hi,$max_hi_time,$dayrain,$max_intemp,$max_intemp_time,$min_intemp,$min_intemp_time,$max_inhum,$max_inhum_time,$min_inhum,$min_inhum_time,$max_indewpt,$max_indewpt_time,$min_indewpt,$min_indewpt_time,$max_uv,$max_uv_time,$max_srad,$max_srad_time)");
+$sth->execute;
+$sth->finish();
+$dbh->disconnect;
+};  #end of eval
+# log error if we caught one
+if($@){ 
+   syslog("notice", "Database error:  $@"); 
+   if($pid == 0){ exit 2;};
+}else{
+   if($opts{d}){syslog("debug", "Updated $db database.");};
+   if($pid == 0){exit;}; # exit only if we are a child process else return
+};
+if($min_chill eq "--"){ $min_chill = 100; };
+if($max_hi eq "--"){ $max_hi = -100; };
+if($max_uv eq "--"){ $max_uv = 255; };
+if($max_srad eq "--"){ $max_srad = 32767; };
+};
+sub get_data {
+unless($opts{l}){
+  $loops++;
+  if(($loops % sprintf("%d", (3600/$loop_ratio))) == 0 && $loops >= sprintf("%d", (86400/$loop_ratio))){
+     $now = time;
+     $elapsed = $now - $epoch;
+     $ratio = $elapsed / $loops;
+     $ratio = sprintf("%.3f", $ratio);
+     if($ratio != $loop_ratio){
+       if($opts{c}){
+         syslog("info", "Recording new loop ratio value in $opts{c}");
+         open(NEWCONF, ">$opts{c}.update") or syslog("warning", "Unable to open $opts{c}.update %m");
+         open(CONF, "<$opts{c}") or syslog("warning", "Unable to open $opts{c} %m");
+       }else{
+         syslog("info", "Recording new loop ratio value in /etc/vanprod.conf");
+         open(CONF, "</etc/vanprod.conf") or syslog("warning", "Unable to open /etc/vanprod.conf %m");
+         open(NEWCONF, ">/etc/vanprod.conf.update") or syslog("warning", "Unable to open /etc/vanprod.conf.update %m");
+       };
+       until(eof(CONF)){
+        $line = <CONF>;
+        chomp($line);
+        $line =~ s/$loop_ratio/$ratio/;
+        print NEWCONF "$line\n";
+       };
+       close(CONF);
+       close(NEWCONF);
+       if($opts{c}){
+        eval{
+         rename("$opts{c}.update", "$opts{c}") or die "Unable to rename $opts{c}.update to $opts{c} $!";
+        };
+       }else{
+        eval{
+         rename("/etc/vanprod.conf.update", "/etc/vanprod.conf") or die "Unable to rename /etc/vanprod.conf.update to /etc/vanprod.conf $!";
+        };
+       };
+       if($@ =~ /Unable to rename/){
+        syslog("warning", "Loop ratio update from $loop_ratio to $ratio has failed!");
+        syslog("warning", "$@");
+        syslog("warning", "You should fix the above error and restart the daemon for automatic loop ratio update attempts to resume.");
+        $opts{l} = 1;
+       }else{
+        syslog("info", "Loop ratio has been changed from $loop_ratio to $ratio."); 
+        $loop_ratio = $ratio;
+        reload();
+       };
+     };
+     if($loops > (90000/$ratio)){ $epoch += 3600; $loops -= (3600/$ratio); };
+  };
+};
+if($slow){sleep($slow);}; # We don't want to run too fast.  Could cause problems.  
+wake_up();
+$bytes = put_string($fd, "LOOP 1\n");
+if($opts{d}){syslog("debug", "Wrote $bytes bytes to $tty requesting loop packet"); };
+$index = 0; # Byte counter
+$crc = 0; 
+eval{
+alarm(1); # Set timeout timer
+while($index < 100){
+        $data[$index] = get_char($fd);
+   if($index){$crc = crc_accum($crc, $data[$index]);};
+        $data[$index] = sprintf("%02x", "$data[$index]"); # Convert to hex
+        $index++;
+};
+alarm(0); # Cancel timeout timer
+}; #  End of eval
+if($@ =~ /Time out/){
+         syslog("notice", "Serial port time out.  Leaving get_data subroutine.");
+         $count++;
+         return;
+};
+$count = 0;
+if($opts{d}){syslog("debug", "Received LOOP packet.");};
+if($crc){
+   syslog("notice", "Loop packet failed crc check.");
+   POSIX::tcflush($fd, TCIOFLUSH);
+   return;
+};
+# Translate values returned by loop command and store extreme values
+#
+# $bar will now be set during the subroutine that does the once per minute
+# write to the RRDs and the dailyobs file.  $bar is now equal to the 
+# altimeter setting.  The SLP provided by the console is captured here.
+#
+$value = hex("$data[9]$data[8]");
+$slp = sprintf("%.3f", ($value / 1000));
+if($bar < $min_bar){
+      $min_bar = $bar;
+      $min_bar_time = strftime "%H:%M:%S", localtime time;
+ $new_extreme = 1;
+};
+if($bar > $max_bar){
+      $max_bar = $bar;
+      $max_bar_time = strftime "%H:%M:%S", localtime time;
+ $new_extreme = 1;
+};
+# Calculate the barometer change rate.
+# The overall trend is provided by Rev. B firmware, but I need to 
+# know the rate of change to make the silent alarms work
+# Now that the daemon calculates the altimeter, this is required 
+# to ensure that the trend is based on that value and not $slp
+push(@bar_vals, $bar); # Place current value on top of stack
+$old_bar = shift(@bar_vals); # Read bottom value from stack
+if(!defined $old_bar){$old_bar = $bar; };
+$bar_diff = $bar - $old_bar;
+if($bar_diff <= -.06){ $trend = "FR"; };
+if($bar_diff > -.06 && $bar_diff <= -.03){ $trend = "FS"; };
+if($bar_diff > -.029 && $bar_diff < .029){ $trend = "ST"; };
+if($bar_diff >= .03 && $bar_diff < .06){ $trend = "RS"; };
+if($bar_diff >=.06){ $trend = "RR"; };
+$value = hex("$data[11]$data[10]");
+if($value < 320 || $value > 1200){
+   syslog("notice", "Indoor temperature out of range.");
+   $oor_count++;
+}else{
+  $intemp = sprintf("%.1f", ($value / 10));
+  if($intemp < $min_intemp){
+   $min_intemp = $intemp;
+   $min_intemp_time = strftime "%H:%M:%S", localtime time;
+   $new_extreme = 1;
+  };
+  if($intemp > $max_intemp){
+   $max_intemp = $intemp;
+   $max_intemp_time = strftime "%H:%M:%S", localtime time;
+   $new_extreme = 1;
+  };
+};
+$value = hex("$data[12]");
+if($value > 100){ 
+   syslog("notice", "Indoor humidity out of range.");
+   $oor_count++;
+}else{
+$inhum = $value;
+  if($inhum < $min_inhum){
+        $min_inhum = $inhum;
+        $min_inhum_time = strftime "%H:%M:%S", localtime time;
+        $new_extreme = 1;
+  };
+  if($inhum > $max_inhum){
+        $max_inhum = $inhum;
+        $max_inhum_time = strftime "%H:%M:%S", localtime time;
+        $new_extreme = 1;
+  };
+  if($inhum == 0){ $inhum = 0.5; };
+};
+$value = hex("$data[14]$data[13]");
+# Thanks to Douglas Weaver for finding this bug and providing the fix.
+# if $outtemp's top bit is set, then it is really negative 
+# (hex() doesn't appear to sign extend).  Need to turn $outtemp to a negative
+if($value & 0x8000){ $value -= 0x10000; };
+if($value < -400 || $value > 1400){ 
+   syslog("notice", "Outdoor temperature out of range."); 
+   $oor_count++;
+}else{
+  $outtemp = sprintf("%.1f", ($value / 10));
+  if($outtemp < $min_outtemp){
+        $min_outtemp = $outtemp;
+        $min_outtemp_time = strftime "%H:%M:%S", localtime time;
+   $new_extreme = 1;
+  };
+  if($outtemp > $max_outtemp){
+        $max_outtemp = $outtemp;
+        $max_outtemp_time = strftime "%H:%M:%S", localtime time;
+   $new_extreme = 1;
+  };
+};
+$value = hex("$data[15]");
+if($value > 150){
+   syslog("notice", "Wind speed out of range."); 
+   $oor_count++;
+}else{
+  $windsp = $value;
+  if($windsp > $gust){ $gust = $windsp; };
+  if($windsp > $wu_gust){ $wu_gust = $windsp; };
+  if($windsp > $cwop_gust){ $cwop_gust = $windsp; };
+};
+$avgwindsp = hex("$data[16]") unless(hex("$data[16]") > 150);
+unless($opts{w}){
+  $sumwind -= shift(@windspds);
+  push(@windspds, $windsp);
+  $sumwind += $windsp;
+  $avgwindsp = sprintf("%.0f", $sumwind/($#windspds + 1));
+};
+$value = hex("$data[18]$data[17]");
+if($value > 360){
+  syslog("notice", "Wind direction out of range.");
+   $oor_count++;
+}else{
+# compute the average wind direction 
+  $winddir = $value;
+  $sumsin -=  shift(@sine);
+  $sumcos -= shift(@cosine); 
+  push(@cosine, cos(.01745329 * $winddir));
+  push(@sine, sin(.01745329 * $winddir));
+  $sumsin += sin(.01745329 * $winddir);
+  $sumcos += cos(.01745329 * $winddir);
+  $avgwinddir = 57.29578 * atan2($sumsin, $sumcos);
+  if($avgwinddir < 0){$avgwinddir += 360; }; 
+  $avgwinddir = sprintf("%.0f", $avgwinddir);
+# convert degrees to 16 point compass rose directions
+  if($winddir < 12){$compdir = "N"};
+  if($winddir > 11 && $winddir < 35){$compdir = "NNE"};
+  if($winddir > 34 && $winddir < 57){$compdir = "NE"};
+  if($winddir > 56 && $winddir < 79){$compdir = "ENE"};
+  if($winddir > 78 && $winddir < 102){$compdir = "E"};
+  if($winddir > 101 && $winddir < 124){$compdir = "ESE"};
+  if($winddir > 123 && $winddir < 147){$compdir = "SE"};
+  if($winddir > 146 && $winddir < 169){$compdir = "SSE"};
+  if($winddir > 168 && $winddir < 192){$compdir = "S"};
+  if($winddir > 191 && $winddir < 214){$compdir = "SSW"};
+  if($winddir > 213 && $winddir < 237){$compdir = "SW"};
+  if($winddir > 236 && $winddir < 259){$compdir = "WSW"};
+  if($winddir > 258 && $winddir < 282){$compdir = "W"};
+  if($winddir > 281 && $winddir < 304){$compdir = "WNW"};
+  if($winddir > 303 && $winddir < 327){$compdir = "NW"};
+  if($winddir > 326 && $winddir < 349){$compdir = "NNW"};
+  if($winddir > 348){$compdir = "N"};
+  if($windsp > $max_windsp && $windsp < 151){
+        $max_windsp = $windsp;
+        $max_windsp_time = strftime "%H:%M:%S", localtime time;
+        $max_winddir = $compdir;
+   $new_extreme = 1;
+  };
+};
+$value = hex("$data[34]");
+if($value > 100){ 
+   syslog("notice", "Outdoor humidity out of range.");
+   $oor_count++;
+}else{
+  $outhum = $value;
+  if($outhum < $min_outhum){
+        $min_outhum = $outhum;
+        $min_outhum_time = strftime "%H:%M:%S", localtime time;
+   $new_extreme = 1;
+  };
+  if($outhum > $max_outhum){
+        $max_outhum = $outhum;
+        $max_outhum_time = strftime "%H:%M:%S", localtime time;
+   $new_extreme = 1;
+  };
+  if($outhum == 0){ $outhum = 0.5; };
+};
+$uv = hex("$data[44]");
+if($uv > $max_uv){ 
+  $max_uv = $uv;
+  $max_uv_time = strftime "%H:%M:%S", localtime time;
+  $new_extreme = 1;
+};
+$srad = hex("$data[46]$data[45]");
+if($srad > $max_srad){
+  $max_srad = $srad;
+  $max_srad_time = strftime "%H:%M:%S", localtime time;
+  $new_extreme = 1;
+};
+$stormrain = hex("$data[48]$data[47]");
+$stormrain = sprintf("%.2f", ($stormrain / 100));
+$stormmonth = 0;
+$stormday = 0;
+$stormyear = 2000;
+if((hex("$data[50]")) < 255 && (hex("$data[49]")) < 255){
+  $bit = hex("$data[50]");
+  if($bit & 128){ $stormmonth = $stormmonth + 8; };
+  if($bit & 64){ $stormmonth = $stormmonth + 4; };
+  if($bit & 32){ $stormmonth = $stormmonth + 2; };
+  if($bit & 16){ $stormmonth = $stormmonth + 1; };
+  if($bit & 8){ $stormday = $stormday + 16; };
+  if($bit & 4){ $stormday = $stormday + 8; };
+  if($bit & 2){ $stormday = $stormday + 4; };
+  if($bit & 1){ $stormday = $stormday + 2; };
+  $bit = hex("$data[49]");
+  if($bit & 128){ $stormday = $stormday + 1; };
+  $stormyear += $bit & 64;
+  $stormyear += $bit & 32;
+  $stormyear += $bit & 16;
+  $stormyear += $bit & 8;
+  $stormyear += $bit & 4;
+  $stormyear += $bit & 2;
+  $stormyear += $bit & 1;
+  $stormstart = sprintf("%02d/%02d/%4d", $stormmonth, $stormday, $stormyear);
+}else{
+  $stormstart = "00/00/00";
+};
+$dayrain = hex("$data[52]$data[51]");
+if($hour == 0 && $minute == 0 && $sec < 4){ $dayrain = 0; };
+$con_rate = sprintf("%.2f", (hex("$data[43]$data[42]") / 100));
+# I want to calculate my own rain rate.  Folks outside of the climate of the
+# US desert Southwest may wonder why, but folks who live in similar climates
+# will understand.  
+# total the dayrain for the last 3600/$loop_ratio passes through the loop
+# and then subtract the oldest value from this to get the amount of
+# rainfall in approximately the past hour.
+$newrain = $dayrain - $prev_dayrain;
+$prev_dayrain = $dayrain;
+if($newrain < 0){ 
+   $newrain = 0; 
+   if($dayrain > 0){ $newrain = $dayrain; };
+};
+# I discovered that the daemon became a bit of a CPU hog while iterating over
+# the rainfall arrays to find the total amount of rainfall for the specific 
+# time period.  So, I instead decided to use a value in a hash and increment
+# or decrement it as necessary when the totals should change.  
+push(@rainfall, $newrain);
+push(@rainfall15, $newrain);
+push(@rainfall24, $newrain);
+if($newrain){
+  $count = 0;
+  while($count < $newrain){$rain{1}++; $rain{15}++; $rain{24}++; $count++;};
+  $rate = sprintf("%.2f", ($rain{1} / 100));
+  $rain1 = sprintf("%.2f", ($rain{1} / 100));
+  $rainm15 = sprintf("%.2f", ($rain{15} / 100));
+  $rain24 = sprintf("%.2f", ($rain{24} / 100));
+  $new_extreme = 1;
+};
+$value = shift(@rainfall15);
+if($value){
+  $count = 0;
+  while($count < $value){ $rain{15}--; $count++;};
+  $rainm15 = sprintf("%.2f", ($rain{15} / 100));
+  $new_extreme = 1;
+};
+$value = shift(@rainfall24);
+if($value){
+  $count = 0;
+  while($count < $value){ $rain{24}--; $count++;};
+  $rain24 = sprintf("%.2f", ($rain{24} / 100));
+  $new_extreme = 1;
+};
+$value = shift(@rainfall);
+if($value){
+  $count = 0;
+  while($count < $value){ $rain{1}--; $count++;};
+  $rate = sprintf("%.2f", ($rain{1} / 100));
+  $rain1 = sprintf("%.2f", ($rain{1} / 100));
+  $new_extreme = 1;
+};
+$dayrain = sprintf("%.2f", ($dayrain / 100));
+if($rate > $dayrain){ $rate = $dayrain; };
+if($hour == 0){ $rate = $dayrain; };
+if($rate > $max_rate){
+        $max_rate = $rate;
+        $max_rate_time = strftime "%H:%M:%S", localtime time;
+        $new_extreme = 1;
+};
+$monrain = hex("$data[54]$data[53]");
+$monrain = sprintf("%.2f", ($monrain / 100));
+$yearrain = hex("$data[56]$data[55]");
+$yearrain = sprintf("%.2f", ($yearrain / 100));
+# For the alarm bits, I increment a flag and take action (initally just writing to syslog)
+# based on the value of the flag.  This way action is not taken every time through the
+# loop but rather at an interval controlled by the user.  Hopefully this approach allows sufficient
+# flexability for future enhancements (i.e. doing something besides putting a message
+# in the syslog and defining "silent" alarms)
+# This action now can call a user specified script and pass 2 arguments.
+$alarm0 = hex("$data[71]");
+$alarm1 = hex("$data[72]");
+$alarm2 = hex("$data[73]");
+# The station does not sleep if there is a console alarm.
+# So, we will sleep in order to keep the loop timing consistent
+if($alarm0 > 0 || $alarm1 > 0 || $alarm2 > 0){ sleep(1); };
+if($alarm0 & 1 || $bar_diff <= $bar_fall_q){$bar_fall_alarm++; }else{$bar_fall_alarm = 0; };
+if($alarm0 & 2 || $bar_diff >= $bar_rise_q){$bar_rise_alarm++; }else{$bar_rise_alarm = 0; };
+if($alarm0 & 4 || $intemp <= $low_intemp_q){$low_intemp_alarm++; }else{$low_intemp_alarm = 0; };
+if($alarm0 & 8 || $intemp >= $hi_intemp_q){$hi_intemp_alarm++; }else{$hi_intemp_alarm = 0; };
+if($alarm0 & 16 || $inhum <= $low_inhum_q){$low_inhum_alarm++;}else{$low_inhum_alarm = 0; };
+if($alarm0 & 32 || $inhum >= $hi_inhum_q){$hi_inhum_alarm++;}else{$hi_inhum_alarm = 0; };
+# bit 6 is the alarm clock (aka time alarm) on the console I'm ignoring it here
+# bit 7 is not used
+if($alarm1 & 1 || $rain1 >= $rain1_q){$con_rate_alarm++; }else{$con_rate_alarm = 0; };
+if($alarm1 & 2 || $rainm15 >= $rainm15_q){$m15_rain_alarm++; }else{$m15_rain_alarm = 0; };
+if($alarm1 & 4 || $rain24 >= $rain24_q){$h24_rain_alarm++; }else{$h24_rain_alarm = 0; };
+if($alarm1 & 8 || $stormrain >= $storm_q){$storm_rain_alarm++; }else{$storm_rain_alarm = 0; };
+# bit 4 is the daily ET alarm I'm ignoring it
+# bits 5 - 7 are not used
+if($alarm2 & 1 || $outtemp <= $low_outtemp_q){$low_outtemp_alarm++; }else{$low_outtemp_alarm = 0; };
+if($alarm2 & 2 || $outtemp >= $hi_outtemp_q){$hi_outtemp_alarm++; }else{$hi_outtemp_alarm = 0; };
+if($alarm2 & 4 || $windsp >= $windsp_q){$windsp_alarm++; }else{$windsp_alarm = 0; };
+if($alarm2 & 8 || $avgwindsp >= $avgwindsp_q){$avgwindsp_alarm++; }else{$avgwindsp_alarm = 0; };
+if($alarm2 & 16 || $dewpt <= $low_outdew_q){$low_outdew_alarm++; }else{$low_outdew_alarm = 0; };
+if($alarm2 & 32 || $dewpt >= $hi_outdew_q){$hi_outdew_alarm++; }else{$hi_outdew_alarm = 0; };
+if($alarm2 & 64 || $hi >= $heat_q){$heat_alarm++; }else{$heat_alarm = 0; };
+if($alarm2 & 128 || $chill <= $chill_q){$chill_alarm++; }else{$chill_alarm = 0; };
+if($bar_fall_alarm == 1){
+  syslog("warning", "Falling barometer alarm.");
+  if($alarm_action ne ""){send_alarm("bar_fall", $bar_diff);};
+};
+if($bar_fall_alarm > 0 && ($bar_fall_alarm % $alarm_interval) == 0){
+  syslog("warning", "Falling barometer alarm.");
+  if($alarm_action ne ""){send_alarm("bar_fall", $bar_diff);};
+};
+if($bar_rise_alarm == 1){
+  syslog("warning", "Rising barometer alarm."); 
+   if($alarm_action ne ""){send_alarm("bar_rise", $bar_diff);}; 
+};
+if($bar_rise_alarm > 0 && ($bar_rise_alarm % $alarm_interval) == 0){
+    syslog("warning", "Rising barometer alarm.");
+     if($alarm_action ne ""){send_alarm("bar_rise", $bar_diff);};
+};
+if($low_intemp_alarm == 1){
+  syslog("warning", "Low indoor temperature alarm."); 
+  if($alarm_action ne ""){send_alarm("low_intemp", $intemp);};
+};
+if($low_intemp_alarm > 0 && ($low_intemp_alarm % $alarm_interval) == 0){
+    syslog("warning", "Low indoor temperature alarm.");
+    if($alarm_action ne ""){send_alarm("low_intemp", $intemp);};
+};
+if($hi_intemp_alarm == 1){
+  syslog("warning", "High indoor temperature alarm."); 
+  if($alarm_action ne ""){send_alarm("hi_intemp", $intemp);};
+};
+if($hi_intemp_alarm > 0 && ($hi_intemp_alarm % $alarm_interval) == 0){
+  syslog("warning", "High indoor temperature alarm."); 
+  if($alarm_action ne ""){send_alarm("hi_intemp", $intemp);};
+};
+if($low_inhum_alarm == 1){
+  syslog("warning", "Low indoor humidity alarm."); 
+  if($alarm_action ne ""){send_alarm("low_inhum", $inhum);};
+};
+if($low_inhum_alarm > 0 && ($low_inhum_alarm % $alarm_interval) == 0){
+  syslog("warning", "Low indoor humidity alarm."); 
+  if($alarm_action ne ""){send_alarm("low_inhum", $inhum);};
+};
+if($hi_inhum_alarm == 1){
+  syslog("warning", "High indoor humudity alarm."); 
+  if($alarm_action ne ""){send_alarm("hi_inhum", $inhum);};
+};
+if($hi_inhum_alarm > 0 && ($hi_inhum_alarm % $alarm_interval) == 0){
+  syslog("warning", "High indoor humudity alarm."); 
+  if($alarm_action ne ""){send_alarm("hi_inhum", $inhum);};
+};
+if($con_rate_alarm == 1){
+  syslog("warning", "High rain rate alarm."); 
+  if($alarm_action ne ""){send_alarm("rain1", $rain1);};
+};
+if($con_rate_alarm > 0 && ($con_rate_alarm % $alarm_interval) == 0){
+  syslog("warning", "High rain rate alarm."); 
+  if($alarm_action ne ""){send_alarm("rain1", $rain1);};
+};
+if($m15_rain_alarm == 1){
+  syslog("warning", "15 minute rain (flash flood) alarm."); 
+  if($alarm_action ne ""){send_alarm("ff", $rainm15);};
+};
+if($m15_rain_alarm > 0 && ($m15_rain_alarm % $alarm_interval) == 0){
+  syslog("warning", "15 minute rain (flash flood) alarm."); 
+  if($alarm_action ne ""){send_alarm("ff", $rainm15);};
+};
+if($h24_rain_alarm == 1){
+  syslog("warning", "24 hour rain total alarm."); 
+  if($alarm_action ne ""){send_alarm("rain24", $rain24);};
+};
+if($h24_rain_alarm > 0 && ($h24_rain_alarm % $alarm_interval) == 0){
+  syslog("warning", "24 hour rain total alarm."); 
+  if($alarm_action ne ""){send_alarm("rain24", $rain24);};
+};
+if($storm_rain_alarm == 1){
+  syslog("warning", "Storm rain total alarm."); 
+  if($alarm_action ne ""){send_alarm("storm", $stormrain);};
+};
+if($storm_rain_alarm > 0 && ($storm_rain_alarm % $alarm_interval) == 0){
+  syslog("warning", "Storm rain total alarm.");
+  if($alarm_action ne ""){send_alarm("storm", $stormrain);}; 
+};
+if($low_outtemp_alarm == 1){
+  syslog("warning", "Low outdoor temperature alarm."); 
+  if($alarm_action ne ""){send_alarm("low_outtemp", $outtemp);};
+};
+if($low_outtemp_alarm > 0 && ($low_outtemp_alarm % $alarm_interval) == 0){
+  syslog("warning", "Low outdoor temperature alarm."); 
+  if($alarm_action ne ""){send_alarm("low_outtemp", $outtemp);};
+};
+if($hi_outtemp_alarm == 1){
+  syslog("warning", "High outdoor temperature alarm."); 
+  if($alarm_action ne ""){send_alarm("hi_outtemp", $outtemp);};
+};
+if($hi_outtemp_alarm > 0 && ($hi_outtemp_alarm % $alarm_interval) == 0){
+  syslog("warning", "High outdoor temperature alarm."); 
+  if($alarm_action ne ""){send_alarm("hi_outtemp", $outtemp);};
+};
+if($windsp_alarm == 1){
+  syslog("warning", "High wind gust alarm."); 
+  if($alarm_action ne ""){send_alarm("windsp", $windsp);};
+};
+if($windsp_alarm > 0 && ($windsp_alarm % $alarm_interval) == 0){
+  syslog("warning", "High wind gust alarm."); 
+  if($alarm_action ne ""){send_alarm("windsp", $windsp);};
+};
+if($avgwindsp_alarm == 1){
+  syslog("warning", "High wind speed alarm."); 
+  if($alarm_action ne ""){send_alarm("avgwindsp", $avgwindsp);};
+};
+if($avgwindsp_alarm > 0 && ($avgwindsp_alarm % $alarm_interval) == 0){
+  syslog("warning", "High wind speed alarm."); 
+  if($alarm_action ne ""){send_alarm("avgwindsp", $avgwindsp);}; 
+};
+if($low_outdew_alarm == 1){
+  syslog("warning", "Low outdoor dewpoint alarm."); 
+  if($alarm_action ne ""){send_alarm("low_outdew", $dewpt);};
+};
+if($low_outdew_alarm > 0 && ($low_outdew_alarm % $alarm_interval) == 0){
+  syslog("warning", "Low outdoor dewpoint alarm."); 
+  if($alarm_action ne ""){send_alarm("low_outdew", $dewpt);};};
+if($hi_outdew_alarm == 1){
+  syslog("warning", "High outdoor dewpoint alarm."); 
+  if($alarm_action ne ""){send_alarm("hi_outdew", $dewpt);};
+};
+if($hi_outdew_alarm > 0 && ($hi_outdew_alarm % $alarm_interval) == 0){
+  syslog("warning", "High outdoor dewpoint alarm."); 
+  if($alarm_action ne ""){send_alarm("hi_outdew", $dewpt);};
+};
+if($heat_alarm == 1){
+  syslog("warning", "High heat index alarm."); 
+  if($alarm_action ne ""){send_alarm("heat", $hi);};
+};
+if($heat_alarm > 0 && ($heat_alarm % $alarm_interval) == 0){
+  syslog("warning", "High heat index alarm."); 
+  if($alarm_action ne ""){send_alarm("heat", $hi);};
+};
+if($chill_alarm == 1){
+  syslog("warning", "Low wind chill alarm."); 
+  if($alarm_action ne ""){send_alarm("chill", $chill);};
+};
+if($chill_alarm > 0 && ($chill_alarm % $alarm_interval) == 0){
+  syslog("warning", "Low wind chill alarm."); 
+  if($alarm_action ne ""){send_alarm("chill", $chill);};
+};
+$trans_bat = hex("$data[87]"); 
+if($trans_bat & 1){ $tid_0_low++; }else{$tid_0_low = 0; };
+if($trans_bat & 2){ $tid_1_low++; }else{$tid_1_low = 0; };
+if($trans_bat & 4){ $tid_2_low++; }else{$tid_2_low = 0; };
+if($trans_bat & 8){ $tid_3_low++; }else{$tid_3_low = 0; };
+if($trans_bat & 16){ $tid_4_low++; }else{$tid_4_low = 0; };
+if($trans_bat & 32){ $tid_5_low++; }else{$tid_5_low = 0; };
+if($trans_bat & 64){ $tid_6_low++; }else{$tid_6_low = 0; };
+if($trans_bat & 128){ $tid_7_low++; }else{$tid_7_low = 0; };
+if($tid_0_low == 1){syslog("notice", "The $tid{0} transmitter battery is low."); };
+if($tid_0_low > 0 && ($tid_0_low % $alarm_interval) == 0){syslog("notice", "The $tid{0} transmitter battery is low."); };
+if($tid_1_low == 1){syslog("notice", "The $tid{1} transmitter battery is low."); };
+if($tid_1_low > 0 && ($tid_1_low % $alarm_interval) == 0){syslog("notice", "The $tid{1} transmitter battery is low."); };
+if($tid_2_low == 1){syslog("notice", "The $tid{2} transmitter battery is low."); };
+if($tid_2_low > 0 && ($tid_2_low % $alarm_interval) == 0){syslog("notice", "The $tid{2} transmitter battery is low."); };
+if($tid_3_low == 1){syslog("notice", "The $tid{3} transmitter battery is low."); };
+if($tid_3_low > 0 && ($tid_3_low % $alarm_interval) == 0){syslog("notice", "The $tid{3} transmitter battery is low."); };
+if($tid_4_low == 1){syslog("notice", "The $tid{4} transmitter battery is low."); };
+if($tid_4_low > 0 && ($tid_4_low % $alarm_interval) == 0){syslog("notice", "The $tid{4} transmitter battery is low."); };
+if($tid_5_low == 1){syslog("notice", "The $tid{5} transmitter battery is low."); };
+if($tid_5_low > 0 && ($tid_5_low % $alarm_interval) == 0){syslog("notice", "The $tid{5} transmitter battery is low."); };
+if($tid_6_low == 1){syslog("notice", "The $tid{6} transmitter battery is low."); };
+if($tid_6_low > 0 && ($tid_6_low % $alarm_interval) == 0){syslog("notice", "The $tid{6} transmitter battery is low."); };
+if($tid_7_low == 1){syslog("notice", "The $tid{7} transmitter battery is low."); };
+if($tid_7_low > 0 && ($tid_7_low % $alarm_interval) == 0){syslog("notice", "The $tid{7} transmitter battery is low."); };
+$con_bat = hex("$data[89]$data[88]");
+$con_bat = (($con_bat * 300) / 512) / 100;
+$con_bat = sprintf("%.2f", $con_bat);
+if($con_bat < 3.75){ $con_bat_low++; };
+if($con_bat < $con_bat_min){ $con_bat_min = $con_bat; };
+if($con_bat_low == 1){
+  syslog("notice", "The console batteries are low.  Minimum voltage has been $con_bat_min V."); 
+};
+if($con_bat_low > 0 && ($con_bat_low % $alarm_interval) == 0){
+  syslog("notice", "The console batteries are low.  Minimum voltage has been $con_bat_min V.");
+};
+$forecasticon = hex("$data[90]");
+$forecastrule = hex("$data[91]");
+$sunrise = hex("$data[93]$data[92]");
+$sunrise = sprintf("%04d", $sunrise);
+$sunset = hex("$data[95]$data[94]");
+@digits = split /(\d\d)/, $sunrise;
+$sunrise = "$digits[0]$digits[1]:$digits[2]$digits[3]";
+@digits = split /(\d\d)/, $sunset;
+$sunset = "$digits[0]$digits[1]:$digits[2]$digits[3]";
+#
+# Calculate Dewpoints
+#
+$tempc = (5/9)*($outtemp-32);
+$ews = $outhum*0.01*exp((17.502*$tempc)/(240.9+$tempc));
+$num1 = 240.9*(log($ews));
+$num2 = 17.5-(log($ews));
+$dewpt = $num1/$num2;
+$dewpt = (9/5)*$dewpt+32;
+$dewpt = sprintf("%.1f", $dewpt);
+if($dewpt < $min_dewpt){
+        $min_dewpt = $dewpt;
+        $min_dewpt_time = strftime "%H:%M:%S", localtime time;
+   $new_extreme = 1;
+};
+if($dewpt > $max_dewpt){
+        $max_dewpt = $dewpt;
+        $max_dewpt_time = strftime "%H:%M:%S", localtime time;
+   $new_extreme = 1;
+};
+$tempc = (5/9)*($intemp-32);
+$ews = $inhum*0.01*exp((17.502*$tempc)/(240.9+$tempc));
+$num1 = 240.9*(log($ews));
+$num2 = 17.5-(log($ews));
+$indewpt = $num1/$num2;
+$indewpt = (9/5)*$indewpt+32;
+$indewpt = sprintf("%.1f", $indewpt);
+if($indewpt < $min_indewpt){
+        $min_indewpt = $indewpt;
+        $min_indewpt_time = strftime "%H:%M:%S", localtime time;
+        $new_extreme = 1;
+};
+if($indewpt > $max_indewpt){
+        $max_indewpt = $indewpt;
+        $max_indewpt_time = strftime "%H:%M:%S", localtime time;
+        $new_extreme = 1;
+};
+#
+# Calculate wind chill
+#
+$chill = 35.74+(0.6215*$outtemp)-(35.75*($avgwindsp**0.16))+(0.4275*$outtemp*($avgwindsp**0.16));
+if($avgwindsp < 3 || $outtemp > 50){ $chill = 100; };
+$chill = sprintf("%.1f", $chill);
+if($chill < $min_chill){
+      $min_chill = $chill;
+      $min_chill_time = strftime "%H:%M:%S", localtime time;
+      $new_extreme = 1;
+};
+#
+# Calculate Heat Index
+#
+if($outtemp > 74.9 && $outhum > 34){
+      $hi = -42.379+(2.04901523*$outtemp)+(10.14333127*$outhum)-(0.22475541*$outtemp*$outhum)-(0.00683783*($outtemp**2))-(0.05481717*($outhum**2))+(0.00122874*($outtemp**2)*$outhum)+(0.00085282*$outtemp*($outhum**2))-(0.000001998*($outtemp**2)*($outhum**2));
+};
+if($outtemp < 77.1){ $hi = -100; };
+if($outtemp > 77 && $outhum < 40){ $hi = -100; };
+$hi = sprintf("%.1f", $hi);
+if($hi > $max_hi){
+      $max_hi = $hi;
+      $max_hi_time = strftime "%H:%M:%S", localtime time;
+      $new_extreme = 1;
+};
+
+
+=head1 Operational Characteristics
+
+In most instances, the daemon collects the data provided by the weather station.  Some values like wind chill, heat index, and dewpoint are not provided and the daemon calculates these for you.  The daemon also checks the crc values on each packet received from the weather station, and if an error is detected, a notice level message is sent to the syslog and the packet is not processed.  If an obviously out of range value is detected within the packet, a notice is sent to the syslog and that value is not processed or used in any calculations.
+
+In the case of the barometric trend, the daemon will calculate this in order to determine the rate of rise or fall in the barometer, thus allowing you to set a silent alarm threshold.  This information is provided by the Rev. B firmware, but it is ignored by the daemon.  The daemon now forces a new barometer reading once per minute.  This is the same as if you had pushed the BAR button on the console twice.  The daemon now will calculate the altimeter setting from the pressure read from the console.  This reading will be regarded by the daemon as the barometer value.  While it is not meterologically correct to use these two interchangeably, the altimeter setting is what CWOP needs to receive and is also what you most commonly see on TV and most internet weather sites as the barometer reading.  The daemon will write the SLP reading (which is what the console shows you on the display) into the RRDs and the dailyobs file so it will be available to you to use if you wish.  In order for this to work, you MUST have your elevation set correctly in the console.  This is contrary to my own reccommendation in previous versions of this software.
+
+In the case of wind direction, it takes the degree reading from the weather station and translates it into a more human friendly form that will be written into the database and the current and extremes files.  Examples:  NE instead of 45 degrees, ESE instead of 105 degrees, etc.  Also for internet site updates and for the daily obs file, it calculates the average direction of the wind during the last three minutes.  The gust that is reported to internet sites is the highest wind speed observed since the previous report.  The average wind speed is used as the basis for calculating the wind chill. 
+
+The daemon does it's own calculation for the rainfall rate even though this is provided by the weather station.  I live in the Southwestern desert areas of the US, so this type of calculation makes sense for my climate.  It isn't likely to be that big of a deal or make that much difference in an area that receives more precipitation.  The calculation that I use does NOT require 2 "dumps" of the rain sensor within 15 minutes in order to register a rate like the rate provided on the console.  It also will not jump ridiculously high if you have a shower that dumps the sensor several times in a short period and then ends 5 minutes later.  I do record  the rate from the console in the current observations file so it is available if you wish to use it.  The data sent to the internet sites is the rate the daemon calculates, which is simply the actual amount of rain received in the previous 60 minutes, unless it is between midnight and 1 AM, then the rate reflects the amount of rain received since midnight.  
+
+Because the database updates and the correct function of the rainfall rate calculations depend on a close syncronization between the time on the weather station and the time on the computer system, the daemon will syncronize the weather station console time with the computer system time at noon each day. 
+
+The daemon also keeps track of the console and transmitter battery voltages and will write a notice to the syslog if the battery voltage drops too low.  This message will repeat at a rate controlled by the $alarm_interval variable until the condition is corrected.
+
+The daemon now monitors what I think are the common alarms that may be set on your console.  You may also set silent versions of these alarms in the vanprod.conf file.  The daemon will log a warning to your syslog when any alarms are triggered.  These messages will continue at a rate controlled by the alarm_interval setting in vanprod.conf.  The alarms monitored are:  falling barometer, rising barometer, low indoor temperature, high indoor temperature, low indoor humidity, high indoor humidity, high rain rate, 15 minute rainfall (aka flash flood alarm), 24 hour rain total, storm total rainfall, low outdoor temperature, high outdoor temperature, wind gust, wind speed (average), low outdoor dewpoint, high outdoor dewpoint, high heat index, low wind chill.  
+
+The daemon will fork a child process to post the updates to internet sites and perform the database updates.  If the fork calls fail, the daemon will still perform these functions, just in a single threaded manner.  Note that a fork is done for weather underground rapid fire mode, and this child will persist as long as the parent daemon.
+
+Leaf moisture, soil moisture, evapotranspiration, extra temperature and humidity readings from additional sensors, and alarms for these sensors are ignored.  The daemon does collect solar radiation and UV index readings if present.  
+
+=cut
+
+# record our current extremes in a file clobbering old file.
+if($new_extreme){
+   if($min_chill == 100){ $min_chill = "--"; };
+   if($max_hi == -100){ $max_hi = "--"; };
+   if($max_uv == 255){ $max_uv = "--"; };
+   if($max_srad == 32767){ $max_srad = "--"; };
+   $date = strftime "%m.%d.%Y", localtime time;
+   open(EXTREMES, ">$directory/extremes.$date") or syslog("notice", "Cannot write to extremes file $directory/extremes.$date %m");
+   print EXTREMES "$min_bar,$min_bar_time,$max_bar,$max_bar_time,$min_outtemp,$min_outtemp_time,$max_outtemp,$max_outtemp_time,$max_windsp,$max_winddir,$max_windsp_time,$min_outhum,$min_outhum_time,$max_outhum,$max_outhum_time,$min_dewpt,$min_dewpt_time,$max_dewpt,$max_dewpt_time,$min_chill,$min_chill_time,$max_hi,$max_hi_time,$max_rate,$max_rate_time,$dayrain,$yearrain,$min_intemp,$min_intemp_time,$max_intemp,$max_intemp_time,$min_inhum,$min_inhum_time,$max_inhum,$max_inhum_time,$min_indewpt,$min_indewpt_time,$max_indewpt,$max_indewpt_time,$rain24,$rain1,$max_uv,$max_uv_time,$max_srad,$max_srad_time";
+   close(EXTREMES);
+   $new_extreme = 0;
+   if($min_chill eq "--"){ $min_chill = 100; };
+   if($max_hi eq "--"){ $max_hi = -100; };
+   if($max_uv eq "--"){ $max_uv = 255; };
+   if($max_srad eq "--"){ $max_srad = 32767; };
+};
+
+=pod
+
+The daemon will generate 3 files and 5 RRDs in the directory that you specify in vanprod.conf.  These files are intended for use by other scripts or programs as opposed to being human readable even though they are plain text files.  This way tasks such as graphing or supplying information to a web page can be done independently of the daemon.  A brief description of each file's name, and contents follows.
+
+F<extremes.mm.dd.yyyy>  This file contains the minimum and maximum values observed for a day.  The daemon always begins a new day at midnight.  This file always contains a single line of comma seperated values in this order:  minimum barometer and the time of observation, maximum barometer and the time of observation, minimum outdoor temp and time, maximum outdoor temp and time, maximum wind speed, direction and time, minimum outdoor humidity and time, maximum outdoor humidity and time, minimum outdoor dewpoint and time, maximum outdoor dewpoint and time, minimum wind chill and time, maximum heat index and time, maximum rainfall rate and time, and the daily rainfall and year to date rainfall totals, minimum indoor temp and time, maximum indoor temp and time, minumum indoor humidity and time, maximum indoor humidity and time, minimum indoor dewpoint and time, and maximum indoor dewpoint and time, 24 hour rainfall, 1 hour rainfall, maximum uv index and time, maximum solar radiation and time.
+
+=cut
+
+# record current observations in a file clobbering old file.  Append to daily file.
+open(CURRENT, ">$directory/currentobs.$date") or syslog("notice", "Cannot write to current obervations file $directory/currentobs.$date %m");
+if($chill == 100){ $chill = "--"; };
+if($hi == -100){ $hi = "--"; };
+if($uv == 255){ $uv = "--"; };
+if($srad == 32767){ $srad = "--"; };
+print CURRENT "$hour,$minute,$sec,$bar,$outtemp,$avgwindsp,$windsp,$compdir,$outhum,$dewpt,$chill,$hi,$rate,$dayrain,$monrain,$yearrain,$sunrise,$sunset,$intemp,$inhum,$indewpt,$trend,$forecasticon,$forecastrule,$stormstart,$stormrain,$rain24,$rain1,$con_rate,$rainm15,$uv,$srad,$slp";
+close(CURRENT);
+# Send to rapid update child process if we should
+if($send_to_wu eq "2" or $send_to_wu =~ /rapid/i){
+  my $dateutc = strftime "%Y-%m-%d %H:%M:%S", gmtime time;
+  if($opts{s}){my $bar = sprintf("%.2f", $slp)};
+  print VPD "$dateutc,$avgwinddir,$avgwindsp,$gust,$outhum,$outtemp,$rate,$dayrain,$bar,$dewpt,$loop_ratio,$sensor_exclude\n";
+};
+if($chill eq "--"){ $chill = 100; };
+if($hi eq "--"){ $hi = -100; };
+if($uv eq "--"){ $uv = 255; };
+if($srad eq "--"){ $srad = 32767; };
+
+=pod
+
+F<currentobs.mm.dd.yyyy>  This file contains the following values from the most recent sample read from the station.  The values are on a single line and comma seperated in the order listed:  Hour of the day, minute, and second, barometer reading, outdoor temp, average wind speed, current wind speed, direction, outdoor humidity, outdoor dewpoint, wind chill, heat index, rainfall rate, daily rain, month to date rain, year to date rain, sunrise, sunset, indoor temp, indoor humidity, indoor dewpoint, barometric trend, forecast icon, forecast rule, storm start date, storm total rainfall, previous 24 hours rainfall, previous 1 hour rainfall,rainfall rate on the console, previous 15 minutes rainfall, uv index, solar radiation,SLP from the console.
+
+F<dailyobs.mm.dd.yyyy>  This file is appended to once per minute and contains the then current observations for that minute on a single line.  The values are comma seperated and in the following order:  hour, minute, barometer, outdoor temp, average wind speed, wind gust for the previous 60 seconds, the average direction, outdoor humidity, outdoor dewpoint, wind chill, heat index, indoor temp, indoor humidity, indoor dewpoint, daily rain amount, 1 hour rainfall, 24 hour rainfall, previous 15 minutes rainfall, uv index, solar radiation, SLP from the console.
+
+Below is a translation of the forecast rule number to the text messages displayed on the Vantage Pro console.  Only the rule number is recorded in the current observations file.  Thanks to Tim Miller for providing these and doing some work on the forecast rule captures.
+
+   0 = "Mostly clear and cooler."
+   1 = "Mostly clear with little temperature change."
+   2 = "Mostly clear for 12 hours with little temperature change."
+   3 = "Mostly clear for 12 to 24 hours and cooler."
+   4 = "Mostly clear with little temperature change."
+   5 = "Partly cloudy and cooler."
+   6 = "Partly cloudy with little temperature change."
+   7 = "Partly cloudy with little temperature change."
+   8 = "Mostly clear and warmer."
+   9 = "Partly cloudy with little temperature change."
+  10 = "Partly cloudy with little temperature change."
+  11 = "Mostly clear with little temperature change."
+  12 = "Increasing clouds and warmer. Precipitation possible within 24 to 48 hours."
+  13 = "Partly cloudy with little temperature change."
+  14 = "Mostly clear with little temperature change."
+  15 = "Increasing clouds with little temperature change. Precipitation possible within 24 hours."
+  16 = "Mostly clear with little temperature change."
+  17 = "Partly cloudy with little temperature change."
+  18 = "Mostly clear with little temperature change."
+  19 = "Increasing clouds with little temperature change. Precipitation possible within 12 hours."
+  20 = "Mostly clear with little temperature change."
+  21 = "Partly cloudy with little temperature change."
+  22 = "Mostly clear with little temperature change."
+  23 = "Increasing clouds and warmer. Precipitation possible within 24 hours."
+  24 = "Mostly clear and warmer. Increasing winds."
+  25 = "Partly cloudy with little temperature change."
+  26 = "Mostly clear with little temperature change."
+  27 = "Increasing clouds and warmer. Precipitation possible within 12 hours. Increasing winds."
+  28 = "Mostly clear and warmer. Increasing winds."
+  29 = "Increasing clouds and warmer."
+  30 = "Partly cloudy with little temperature change."
+  31 = "Mostly clear with little temperature change."
+  32 = "Increasing clouds and warmer. Precipitation possible within 12 hours. Increasing winds."
+  33 = "Mostly clear and warmer. Increasing winds."
+  34 = "Increasing clouds and warmer."
+  35 = "Partly cloudy with little temperature change."
+  36 = "Mostly clear with little temperature change."
+  37 = "Increasing clouds and warmer. Precipitation possible within 12 hours. Increasing winds."
+  38 = "Partly cloudy with little temperature change."
+  39 = "Mostly clear with little temperature change."
+  40 = "Mostly clear and warmer. Precipitation possible within 48 hours."
+  41 = "Mostly clear and warmer."
+  42 = "Partly cloudy with little temperature change."
+  43 = "Mostly clear with little temperature change."
+  44 = "Increasing clouds with little temperature change. Precipitation possible within 24 to 48 hours."
+  45 = "Increasing clouds with little temperature change."
+  46 = "Partly cloudy with little temperature change."
+  47 = "Mostly clear with little temperature change."
+  48 = "Increasing clouds and warmer. Precipitation possible within 12 to 24 hours."
+  49 = "Partly cloudy with little temperature change."
+  50 = "Mostly clear with little temperature change."
+  51 = "Increasing clouds and warmer. Precipitation possible within 12 to 24 hours. Windy."
+  52 = "Partly cloudy with little temperature change."
+  53 = "Mostly clear with little temperature change."
+  54 = "Increasing clouds and warmer. Precipitation possible within 12 to 24 hours. Windy."
+  55 = "Partly cloudy with little temperature change."
+  56 = "Mostly clear with little temperature change."
+  57 = "Increasing clouds and warmer. Precipitation possible within 6 to 12 hours."
+  58 = "Partly cloudy with little temperature change."
+  59 = "Mostly clear with little temperature change."
+  60 = "Increasing clouds and warmer. Precipitation possible within 6 to 12 hours. Windy."
+  61 = "Partly cloudy with little temperature change."
+  62 = "Mostly clear with little temperature change."
+  63 = "Increasing clouds and warmer. Precipitation possible within 12 to 24 hours. Windy."
+  64 = "Partly cloudy with little temperature change."
+  65 = "Mostly clear with little temperature change."
+  66 = "Increasing clouds and warmer. Precipitation possible within 12 hours."
+  67 = "Partly cloudy with little temperature change."
+  68 = "Mostly clear with little temperature change."
+  69 = "Increasing clouds and warmer. Precipitation likley."
+  70 = "Clearing and cooler. Precipitation ending within 6 hours."
+  71 = "Partly cloudy with little temperature change."
+  72 = "Clearing and cooler. Precipitation ending within 6 hours."
+  73 = "Mostly clear with little temperature change."
+  74 = "Clearing and cooler. Precipitation ending within 6 hours."
+  75 = "Partly cloudy and cooler."
+  76 = "Partly cloudy with little temperature change."
+  77 = "Mostly clear and cooler."
+  78 = "Clearing and cooler. Precipitation ending within 6 hours."
+  79 = "Mostly clear with little temperature change."
+  80 = "Clearing and cooler. Precipitation ending within 6 hours."
+  81 = "Mostly clear and cooler."
+  82 = "Partly cloudy with little temperature change."
+  83 = "Mostly clear with little temperature change."
+  84 = "Increasing clouds with little temperature change. Precipitation possible within 24 hours."
+  85 = "Mostly cloudy and cooler. Precipitation continuing."
+  86 = "Partly cloudy with little temperature change."
+  87 = "Mostly clear with little temperature change."
+  88 = "Mostly cloudy and cooler. Precipitation likely."
+  89 = "Mostly cloudy with little temperature change. Precipitation continuing."
+  90 = "Mostly cloudy with little temperature change. Precipitation likely."
+  91 = "Partly cloudy with little temperature change."
+  92 = "Mostly clear with little temperature change."
+  93 = "Increasing clouds and cooler. Precipitation possible and windy within 6 hours."
+  94 = "Increasing clouds with little temperature change. Precipitation possible and windy within 6 hours."
+  95 = "Mostly cloudy and cooler. Precipitation continuing. Increasing winds."
+  96 = "Partly cloudy with little temperature change."
+  97 = "Mostly clear with little temperature change."
+  98 = "Mostly cloudy and cooler. Precipitation likely. Increasing winds."
+  99 = "Mostly cloudy with little temperature change. Precipitation continuing. Increasing winds."
+ 100 = "Mostly cloudy with little temperature change. Precipitation likely. Increasing winds."
+ 101 = "Partly cloudy with little temperature change."
+ 102 = "Mostly clear with little temperature change."
+ 103 = "Increasing clouds and cooler. Precipitation possible within 12 to 24 hours possible wind shift to the W, NW, or N."
+ 104 = "Increasing clouds with little temperature change. Precipitation possible within 12 to 24 hours possible wind shift to the W, NW, or N."
+ 105 = "Partly cloudy with little temperature change."
+ 106 = "Mostly clear with little temperature change."
+ 107 = "Increasing clouds and cooler. Precipitation possible within 6 hours possible wind shift to the W, NW, or N."
+ 108 = "Increasing clouds with little temperature change. Precipitation possible within 6 hours possible wind shift to the W, NW, or N."
+ 109 = "Mostly cloudy and cooler. Precipitation ending within 12 hours possible wind shift to the W, NW, or N."
+ 110 = "Mostly cloudy and cooler. Possible wind shift to the W, NW, or N."
+ 111 = "Mostly cloudy with little temperature change. Precipitation ending within 12 hours possible wind shift to the W, NW, or N."
+ 112 = "Mostly cloudy with little temperature change. Possible wind shift to the W, NW, or N."
+ 113 = "Mostly cloudy and cooler. Precipitation ending within 12 hours possible wind shift to the W, NW, or N."
+ 114 = "Partly cloudy with little temperature change."
+ 115 = "Mostly clear with little temperature change."
+ 116 = "Mostly cloudy and cooler. Precipitation possible within 24 hours possible wind shift to the W, NW, or N."
+ 117 = "Mostly cloudy with little temperature change. Precipitation ending within 12 hours possible wind shift to the W, NW, or N."
+ 118 = "Mostly cloudy with little temperature change. Precipitation possible within 24 hours possible wind shift to the W, NW, or N."
+ 119 = "Clearing, cooler and windy. Precipitation ending within 6 hours."
+ 120 = "Clearing, cooler and windy."
+ 121 = "Mostly cloudy and cooler. Precipitation ending within 6 hours. Windy with possible wind shift to the W, NW, or N."
+ 122 = "Mostly cloudy and cooler. Windy with possible wind shift o the W, NW, or N."
+ 123 = "Clearing, cooler and windy."
+ 124 = "Partly cloudy with little temperature change."
+ 125 = "Mostly clear with little temperature change."
+ 126 = "Mostly cloudy with little temperature change. Precipitation possible within 12 hours. Windy."
+ 127 = "Partly cloudy with little temperature change."
+ 128 = "Mostly clear with little temperature change."
+ 129 = "Increasing clouds and cooler. Precipitation possible within 12 hours, possibly heavy at times. Windy."
+ 130 = "Mostly cloudy and cooler. Precipitation ending within 6 hours. Windy."
+ 131 = "Partly cloudy with little temperature change."
+ 132 = "Mostly clear with little temperature change."
+ 133 = "Mostly cloudy and cooler. Precipitation possible within 12 hours. Windy."
+ 134 = "Mostly cloudy and cooler. Precipitation ending in 12 to 24 hours."
+ 135 = "Mostly cloudy and cooler."
+ 136 = "Mostly cloudy and cooler. Precipitation continuing, possible heavy at times. Windy."
+ 137 = "Partly cloudy with little temperature change."
+ 138 = "Mostly clear with little temperature change."
+ 139 = "Mostly cloudy and cooler. Precipitation possible within 6 to 12 hours. Windy."
+ 140 = "Mostly cloudy with little temperature change. Precipitation continuing, possibly heavy at times. Windy."
+ 141 = "Partly cloudy with little temperature change."
+ 142 = "Mostly clear with little temperature change."
+ 143 = "Mostly cloudy with little temperature change. Precipitation possible within 6 to 12 hours. Windy."
+ 144 = "Partly cloudy with little temperature change."
+ 145 = "Mostly clear with little temperature change."
+ 146 = "Increasing clouds with little temperature change. Precipitation possible within 12 hours, possibly heavy at times. Windy."
+ 147 = "Mostly cloudy and cooler. Windy."
+ 148 = "Mostly cloudy and cooler. Precipitation continuing, possibly heavy at times. Windy."
+ 149 = "Partly cloudy with little temperature change."
+ 150 = "Mostly clear with little temperature change."
+ 151 = "Mostly cloudy and cooler. Precipitation likely, possibly heavy at times. Windy."
+ 152 = "Mostly cloudy with little temperature change. Precipitation continuing, possibly heavy at times. Windy."
+ 153 = "Mostly cloudy with little temperature change. Precipitation likely, possibly heavy at times. Windy."
+ 154 = "Partly cloudy with little temperature change."
+ 155 = "Mostly clear with little temperature change."
+ 156 = "Increasing clouds and cooler. Precipitation possible within 6 hours. Windy."
+ 157 = "Increasing clouds with little temperature change. Precipitation possible within 6 hours. Windy"
+ 158 = "Increasing clouds and cooler. Precipitation continuing. Windy with possible wind shift to the W, NW, or N."
+ 159 = "Partly cloudy with little temperature change."
+ 160 = "Mostly clear with little temperature change."
+ 161 = "Mostly cloudy and cooler. Precipitation likely. Windy with possible wind shift to the W, NW, or N."
+ 162 = "Mostly cloudy with little temperature change. Precipitation continuing. Windy with possible wind shift to the W, NW, or N."
+ 163 = "Mostly cloudy with little temperature change. Precipitation likely. Windy with possible wind shift to the W, NW, or N."
+ 164 = "Increasing clouds and cooler. Precipitation possible within 6 hours. Windy with possible wind shift to the W, NW, or N."
+ 165 = "Partly cloudy with little temperature change."
+ 166 = "Mostly clear with little temperature change."
+ 167 = "Increasing clouds and cooler. Precipitation possible within 6 hours possible wind shift to the W, NW, or N."
+ 168 = "Increasing clouds with little temperature change. Precipitation possible within 6 hours. Windy with possible wind shift to the W, NW, or N."
+ 169 = "Increasing clouds with little temperature change. Precipitation possible within 6 hours possible wind shift to the W, NW, or N."
+ 170 = "Partly cloudy with little temperature change."
+ 171 = "Mostly clear with little temperature change."
+ 172 = "Increasing clouds and cooler. Precipitation possible within 6 hours. Windy with possible wind shift to the W, NW, or N."
+ 173 = "Increasing clouds with little temperature change. Precipitation possible within 6 hours. Windy with possible wind shift to the W, NW, or N."
+ 174 = "Partly cloudy with little temperature change."
+ 175 = "Mostly clear with little temperature change."
+ 176 = "Increasing clouds and cooler. Precipitation possible within 12 to 24 hours. Windy with possible wind shift to the W, NW, or N."
+ 177 = "Increasing clouds with little temperature change. Precipitation possible within 12 to 24 hours. Windy with possible wind shift to the W, NW, or N."
+ 178 = "Mostly cloudy and cooler. Precipitation possibly heavy at times and ending within 12 hours. Windy with possible wind shift to the W, NW, or N."
+ 179 = "Partly cloudy with little temperature change."
+ 180 = "Mostly clear with little temperature change."
+ 181 = "Mostly cloudy and cooler. Precipitation possible within 6 to 12 hours, possibly heavy at times. Windy with possible wind shift to the W, NW, or N."
+ 182 = "Mostly cloudy with little temperature change. Precipitation ending within 12 hours. Windy with possible wind shift to the W, NW, or N."
+ 183 = "Mostly cloudy with little temperature change. Precipitation possible within 6 to 12 hours, possibly heavy at times. Windy with possible wind shift to the W,
+ NW, or N."
+ 184 = "Mostly cloudy and cooler. Precipitation continuing."
+ 185 = "Partly cloudy with little temperature change."
+ 186 = "Mostly clear with little temperature change."
+ 187 = "Mostly cloudy and cooler. Precipitation likely. Windy with possible wind shift to the W, NW, or N."
+ 188 = "Mostly cloudy with little temperature change. Precipitation continuing."
+ 189 = "Mostly cloudy with little temperature change. Precipitation likely."
+ 190 = "Partly cloudy with little temperature change."
+ 191 = "Mostly clear with little temperature change."
+ 192 = "Mostly cloudy and cooler. Precipitation possible within 12 hours, possibly heavy at times. Windy."
+ 193 = "FORECAST REQUIRES 3 HOURS OF RECENT DATA"
+ 194 = "Mostly clear and cooler."
+ 195 = "Mostly clear and cooler."
+ 196 = "Mostly clear and cooler."
+
+Here is a listing of the forecast icon numbers.  Note that I only list each icon component. Add the values together to get the various icon combinations.  (Example 3 = Cloud with rain  1 (rain) + 2 (cloud) = 3)
+
+  1 - Rain drops
+  2 - Cloud
+  4 - Part Sun (Small sun -- This never appears by itself)
+  8 - Sun (Big bright sun)
+ 16 - Snow
+
+=cut
+
+if($prev_minute != $minute){
+  read_bar() unless($hour == 0 && $minute == 0);  # Don't update the barometer at midnight, tends to get us off in the weeds
+  unless($opts{r}){ rrd_update(); };
+  if($chill == 100){ $chill = "--"; };
+  if($hi == -100){ $hi = "--"; };
+  if($uv == 255){ $uv = "--"; };
+  if($srad == 32767){ $srad = "--"; };
+  print DAILY "$hour,$minute,$bar,$outtemp,$avgwindsp,$gust,$avgwinddir,$outhum,$dewpt,$chill,$hi,$intemp,$inhum,$indewpt,$dayrain,$rain1,$rain24,$rainm15,$uv,$srad,$slp\n";
+  select(DAILY);
+  $| = 1;  # force the buffer to flush
+  $prev_minute = $minute;  # only write once per minute
+  $gust = 0; # reset counters
+  if($chill eq "--"){ $chill = 100; };
+  if($hi eq "--"){ $hi = -100; };
+  if($uv eq "--"){ $uv = 255; };
+  if($srad eq "--"){ $srad = 32767; };
+};
+if($oor_count >= 3){
+  $oor_loops++;
+  $backoff = $oor_count * $oor_loops;
+  syslog("notice", "Too many out of range values, sleeping $backoff seconds.");
+  sleep($backoff);
+  if($backoff > 120){
+    syslog("notice", "Too many bad values.  Exiting.");
+    $time_to_die = 1;
+  };
+};  
+$oor_count = 0;
+}; # end sub
+sub read_bar {
+  wake_up();
+  put_string($fd, "BARREAD\n");
+  @data = ();
+  $index = 0;
+  $old_bar = $bar;
+  my $lines = 0;
+  eval{
+    alarm(3);  # 3 second timeout
+    while($index < 13){
+      $data[$index] = get_char($fd);
+      $index++;
+    };
+    alarm(0);
+  }; # end eval
+  if($@ =~ /Time out/){
+    syslog("info", "Time out during barometer update, retrying.");
+    $count++;
+    read_bar();
+    return();
+  }else{
+    if($data[2] != 79 && $data[3] != 75){
+      syslog("info", "Unexpected data recieved in response to barometer update:  @data");
+      $count++;
+      read_bar();
+      return();
+    };
+  };
+  put_string($fd, "BARDATA\n");
+  @data = ();
+  $index = 0;
+  my $response = "";
+  eval{
+  alarm(2);  # 2 second timeout
+  while($lines < 11){
+    $data[$index] = get_char($fd);
+    $response .= pack("C*", $data[$index]);
+    if($data[$index] == 10){
+      $lines++;
+      $index++;
+      $data[$index] = get_char($fd);  # read LF character, but we won't do anything with it
+    };
+    $index++;
+  };
+  }; # end eval
+  alarm(0);
+  if($@ =~ /Time out/){
+    if($lines < 10) {
+      syslog("info", "Short read, $lines lines instead of 10 lines of barometer data from console.  Will attempt to continue.");
+    };
+  };
+  my @params = split /\s+/, $response;
+  if($params[2] eq "BAR" and $params[14] eq "R" and $params[16] eq "BARCAL"){
+    my $raw_in = ($params[3] - $params[17]) / $params[15];
+    my $raw_mb = ($raw_in * 33.8637526) + $bar_offset;
+    my $elev_m = $params[5] * 0.3048;
+    my $altimiter_mb = ($raw_mb - 0.3) * ( 1 + (((1013.25**0.190284 * 0.0065) / 288) * ($elev_m / ($raw_mb - 0.3)**0.190284)))**(1 / 0.190287);
+    $bar = sprintf("%.3f", $altimiter_mb / 33.8637526);
+    if($bar < 29.25 || $bar > 30.75){
+      syslog("notice", "Barometer reading out of range: $bar");
+      $bar = $old_bar;
+    };
+  }else{
+    syslog("info", "Problem parsing barometer parameters.  Aborting barometer update. Received $response ");
+    $count++;
+    return();
+  };
+$count = 0;
+};
+sub send_alarm {
+  my $trigger = shift();
+  my $var = shift();
+  $value = `$alarm_action $trigger $var 2>&1`;
+  if($value){syslog("warning", "$alarm_action:  $value"); };
+};
+sub rrd_check {
+# build rrd's unless they already exist
+  unless(-e "$directory/wind.rrd"){
+    RRDs::create("$directory/wind.rrd", "--step=60", 
+                 "DS:windspeed:GAUGE:120:0:150",
+                 "DS:windgust:GAUGE:120:0:150",
+                 "DS:cosine:GAUGE:120:-90:90",
+                 "DS:sine:GAUGE:120:-90:90",
+		 "RRA:LAST:0.5:1:10080",    # 7 days
+                 "RRA:AVERAGE:0.5:5:8640",  # 30 days 
+                 "RRA:AVERAGE:0.5:60:1440", # 60 days
+                 "RRA:AVERAGE:0.5:720:180", # 90 days
+                 "RRA:AVERAGE:0.5:1440:180" # 180 days
+    );
+  };
+  unless(-e "$directory/indoor.rrd"){
+    RRDs::create("$directory/indoor.rrd", "--step=60", 
+                 "DS:temp:GAUGE:120:32:120",
+                 "DS:humidity:GAUGE:120:0:100",
+                 "DS:dewpoint:GAUGE:120:-20:100",
+		 "RRA:LAST:0.5:1:10080",    # 7 days
+                 "RRA:AVERAGE:0.5:5:8640",  # 30 days
+                 "RRA:AVERAGE:0.5:60:1440", # 60 days
+                 "RRA:AVERAGE:0.5:720:180", # 90 days
+                 "RRA:AVERAGE:0.5:1440:180" # 180 days
+    );
+  };
+  unless(-e "$directory/outdoor.rrd"){
+    RRDs::create("$directory/outdoor.rrd", "--step=60",
+                 "DS:temp:GAUGE:120:-40:140",
+                 "DS:humidity:GAUGE:120:0:100",
+                 "DS:dewpoint:GAUGE:120:-40:100",
+                 "DS:heat:GAUGE:120:75:150",
+                 "DS:chill:GAUGE:120:-100:50",
+		 "RRA:LAST:0.5:1:10080",    # 7 days
+                 "RRA:AVERAGE:0.5:5:8640",  # 30 days
+                 "RRA:AVERAGE:0.5:60:1440", # 60 days
+                 "RRA:AVERAGE:0.5:720:180", # 90 days
+                 "RRA:AVERAGE:0.5:1440:180" # 180 days
+    );
+  };
+#
+# If you have solar radiation sensors and want to track it, uncomment
+# below.
+#
+#  unless(-e "$directory/solar.rrd"){
+#    RRDs::create("$directory/solar.rrd", "--step=60",
+#                 "DS:rad:GAUGE:120:0:32766",
+#                 "DS:uv:GAUGE:120:0:100",
+#		  "RRA:LAST:0.5:1:10080",    # 7 days
+#                 "RRA:AVERAGE:0.5:5:8640",  # 30 days
+#                 "RRA:AVERAGE:0.5:60:1440", # 60 days
+#                 "RRA:AVERAGE:0.5:720:180", # 90 days
+#                 "RRA:AVERAGE:0.5:1440:180" # 180 days
+#    );
+#  };
+  unless(-e "$directory/barometer.rrd"){
+    RRDs::create("$directory/barometer.rrd", "--step=60",
+                 "DS:barometer:GAUGE:120:29:31",
+                 "DS:slp:GAUGE:120:28:32",
+		 "RRA:LAST:0.5:1:10080",    # 7 days
+                 "RRA:AVERAGE:0.5:5:8640",  # 30 days
+                 "RRA:AVERAGE:0.5:60:1440", # 60 days
+                 "RRA:AVERAGE:0.5:720:180", # 90 days
+                 "RRA:AVERAGE:0.5:1440:180" # 180 days
+    );
+  };
+  unless(-e "$directory/rain.rrd"){
+    RRDs::create("$directory/rain.rrd", "--step=60",
+                 "DS:hour:GAUGE:120:0:U",
+                 "DS:day:GAUGE:120:0:U",
+                 "DS:24:GAUGE:120:0:U",
+                 "DS:month:GAUGE:120:0:U",
+                 "DS:year:GAUGE:120:0:U",
+                 "RRA:LAST:0.5:1:259200"  # 180 days
+    );
+  };
+};
+
+=pod
+
+The daemon now utilizes round robin databases via rrdtool that is built with --enable-perl-site-install passed at compile time.  If your distro did not build rrdtool that way, then you will need to add 'use lib qw(path/to/rrdtool/lib/perl)' to the daemon code.  If your rrdtool was built with --disable-perl then it does you no good and you will need to get a different installation of rrdtool.  This utility is very useful for time based observations and comes with toolkits for querying the contents of the rrd and creating graphics on the fly.  See http://www.rrdtool.org for information on this utility and to download it if your distro doesn't provide a handy copy for you.  Five round robin databases will be created in the daemon's working directory, wind.rrd, indoor.rrd, outdoor.rrd, barometer.rrd, and rain.rrd.  Wind.rrd contains the wind speed, gust, and the basic elements required to determine an average wind direction, which are the sine and cosine values of the wind direction expressed in radians.  It does not contain a wind direction value expressed in degrees.  The reason behind this is so that when the RRD does the averaging in order to cover the longer time windows offered these averages will still represent the wind direction correctly.  For those not already familiar with how RRDs work to generate graphs, the following is an example of how to extract the sine and cosine values from the winddir RRD and have it expressed as a direction in degrees on a graph.  This is not a complete working example, only four of the required statements.  Refer to the rrdtool documentation for further info.
+
+ DEF:cosine=/path/to/winddir.rrd:cosine:LAST 
+ DEF:sine=/path/to/winddir.rrd:sine:LAST
+ CDEF:rawdeg=sine,cosine,ATAN2,RAD2DEG
+ CDEF:winddir=rawdeg,0,LT,rawdeg,360,+,rawdeg,IF
+
+Indoor.rrd and outdoor.rrd contain temperature, humidity, and dewpoint, and outdoor.rrd also adds heat index and wind chill.  Barometer.rrd contains the current barometer and SLP readings, and rain.rrd contains rainfall for the past hour, since midnight, current month, and year to date.  Each of the rrds are updated every 60 seconds and retain all of the values fed into them from the previous seven days.  As time goes by the resolution on the data points drops from 60 seconds (the inital seven days) to five minute averages (day 8 through 30) to one hour averages (days 31 through 60) to 12 hour averages (days 61 through 90) to 24 hour averages (days 91 through 180).  The rain.rrd works differently in that it keeps the values for 180 days and does not do any averaging.  If you would like to change the behavior of the RRDs, you will need to edit the code prior to the RRDs being created.  Thanks to David Gabler for providing a patch that included the initial support for RRDs, though I went a slightly different direction with this implementation.
+
+=cut
+ 
+sub rrd_update {
+  if($sensor_exclude & 1){ my $outtemp = "U"; my $dewpt = "U"; my $hi = "U"; my $chill = "U"; };
+  if($sensor_exclude & 2){ my $bar = "U"; my $slp = "U"; };
+  if($sensor_exclude & 4){ my $avgwindsp = "U"; my $gust = "U"; };
+  if($sensor_exclude & 8){ my $sumcos = "U"; my $sumsin = "U"; };
+  if($sensor_exclude & 16){ my $outhum = "U"; my $dewpt = "U"; };
+  if($sensor_exclude & 32){ my $rain1 = "U"; my $dayrain = "U"; my $rain24 = "U"; my $monrain = "U"; my $yearrain = "U"; };
+  my $rrderror = "";
+  RRDs::update ("$directory/wind.rrd","N:$avgwindsp:$gust:$sumcos:$sumsin");
+  $rrderror = RRDs::error;
+  if($rrderror){ syslog("warning", "wind.rrd not updated: $rrderror");};
+  RRDs::update ("$directory/indoor.rrd", "N:$intemp:$inhum:$indewpt");
+  $rrderror = RRDs::error;
+  if($rrderror){ syslog("warning", "indoor.rrd not updated: $rrderror");};
+  RRDs::update ("$directory/outdoor.rrd", "N:$outtemp:$outhum:$dewpt:$hi:$chill");
+  $rrderror = RRDs::error;
+  if($rrderror){ syslog("warning", "outdoor.rrd not updated: $rrderror");};
+  RRDs::update ("$directory/barometer.rrd", "N:$bar:$slp");
+  $rrderror = RRDs::error;
+  if($rrderror){ syslog("warning", "barometer.rrd not updated: $rrderror");};
+  RRDs::update ("$directory/rain.rrd", "N:$rain1:$dayrain:$rain24:$monrain:$yearrain");
+  $rrderror = RRDs::error;
+  if($rrderror){ syslog("warning", "rain.rrd not updated: $rrderror");};
+};
+
+=head1 EXAMPLES
+
+Here are some examples of the contents of the files output by the daemon:
+
+B<extremes.mm.dd.yy> (New lines added for better readability in this example)
+
+30.01,16:59:02,30.12,00:00:02,24.7,07:13:22,53.9,14:45:51,24,WSW,14:53:02,22,
+16:03:27,81,06:56:50,15.1,16:03:50,28.1,11:56:22,20.1,07:15:58,--,00:00:00,
+0.00,00:00:02,0.00,14.19,67.0,07:00:01,77.7,13:10:02,9,16:24:59,24,01:45:00,
+12.0,16:36:59,32.2,13:18:01,0.00,0.00,--,--
+
+B<currentobs.mm.dd.yyyy>
+
+18,46,45,30.021,42.1,6,5,WSW,50,24.8,38.3,--,0.00,0.00,1.81,14.19,06:25,18:12,73.3,14,21.3,ST,8,1,00/00/00,0.00,0.00,0.00,0.00,0.00,--,--,29.743
+
+B<dailyobs.mm.dd.yyyy>
+
+ 10,20,29.889,41.6,13,19,239,40,19.1,34.5,--,74.5,23,34.3,0.00,0.00,0.00,0.00,--,--,29.960
+ 10,21,29.887,41.5,16,18,241,42,20.1,33.5,--,74.5,26,37.4,0.00,0.00,0.00,0.00,--,--,29.960
+ 10,22,29.880,41.2,14,17,245,41,19.3,33.7,--,74.5,23,34.3,0.00,0.00,0.00,0.00,--,--,29.958
+ 10,23,29.875,41.2,13,17,245,44,21.0,34.0,--,74.5,23,34.3,0.00,0.00,0.00,0.00,--,--,29.974
+ 10,24,29.880,41.3,11,12,251,41,19.4,34.9,--,74.5,27,38.4,0.00,0.00,0.00,0.00,--,--,29.969
+ 10,25,29.885,41.8,9,13,262,41,19.8,36.3,--,74.5,23,34.3,0.00,0.00,0.00,0.00,--,--,29.974
+ 10,26,29.887,41.9,10,15,269,39,18.8,36.0,--,74.5,24,35.4,0.00,0.00,0.00,0.00,--,--,29.956
+ 10,27,29.885,41.8,12,17,249,39,18.7,35.1,--,74.5,23,34.3,0.00,0.00,0.00,0.00,--,--,29.958
+ 10,28,29.884,41.8,13,17,252,41,19.8,34.8,--,74.5,23,34.3,0.00,0.00,0.00,0.00,--,--,29.956
+ 10,29,29.883,41.6,11,14,237,41,19.7,35.2,--,74.5,23,34.3,0.00,0.00,0.00,0.00,--,--,29.956
+ 10,30,29.883,41.5,12,18,247,43,20.7,34.7,--,74.5,27,38.4,0.00,0.00,0.00,0.00,--,--,29.954
+
+=head1 CHANGES
+
+B<1.1>   Added monitoring for the console battery level.
+   Added monitoring of indoor temperature, humidity, and dewpoint.
+   Added sanity checking for values that are obviously out of range.
+
+B<1.2>   Improved sanity checks for out of range values.
+   Integrated work done by Tim Miller on barometric trend and forecast rules.
+   Calculate the barometric trend for stations with Rev. A firmware.  (auto-detected)
+   Added monitoring for the various transmitter battery levels for wireless stations.
+   Modified the wind chill calculation to follow the formula and guidelines from the NWS.  (I had left some cruft in the code from the earliest days of the program.)
+   Added alarm bit processing.
+   The storm total rainfall and storm start date are now recorded.
+
+B<2.0>   Added updates to APRSWXNET/CWOP.
+   Some minor bug fixes.
+   Tracking of rainfall in the past 1 and 24 hours.
+   Switched to using a vanprod.conf file, changed the behavior of a HUP signal and added handling of USR1 signal.
+   The daemon no longer sets the heat index and wind chill values to the outdoor temp.  If these values should not be defined according to NWS formulas they are set to -- be aware of this if you parse any of the generated files.  Also you may need to modify your database specs for those two columns.  
+   Added silent alarm capability.
+   Added capability to call an external script in response to an alarm.
+   Added loop ratio to increase accuracy of some calculated values.
+   Added daily rain amount to dailyobs file.
+   Added rainfall rate from the console to current obs file. 
+   Improved average wind direction calculation
+
+B<2.0.1>   Some minor tweaks and bug fixes.  Mostly in the APRSWXNET/CWOP message formatting.
+
+B<2.1>   Added 1 hour and 24 hour rainfall totals to dailyobs file.
+   Some tweaks on the barometer trend calculation.  The console actually tracks the barometer to a resolution of .001 and vanprod now does the same.  The data written to the files is now carried out to .001 but the database value still has a .01 resolution.  
+   Improved the intelligence for rolling over to the next APRSWXNET/CWOP server in the event that one or more of them are down.
+   Fixed bug where daily rain and max rate values were being set to the previous day's rain total at midnight but correct the rest of the day.  
+   Fixed bug where 1 and 24 hour rain totals would not be completely zeroed out if the rain originally fell in a heavy downpour.  
+
+B<2.2>   Added previous 15 minutes rainfall to current and dailyobs files.
+   Added UV and Solar radiation readings from console.
+   Force console to update barometer every minute.
+   Adjusted timing of CWOP packet transmissions based on coordination with Dick, KB7ZVA.
+   Added support for weather underground rapid fire mode.
+
+B<2.3>  Calculate the average wind speed using the same method as NWS ASOS stations, added -w switch to avoid this and use average from console.
+        Automatically calculate and internally update the loop ratio and keep the current value in the configuration file.  Changed the behavior of -l so that when that switch is present, the loop ratio is read from the configuration file and never calculated or updated by the daemon.  
+        Changed behaviour of HUP signal and removed USR1 signal.
+   Withdrew support for cwop tier 2 servers following their abrupt pulling out of the CWOP network.  Connections are now made on port 14580 to one of the APRSWXNET/CWOP core servers.  You will need to update your vanprod.conf file to include rotate.aprs.net, first.aprs.net, second.aprs.net, and third.aprs.net.  The daemon fails over to the next in the list if one is not working or responding correctly.  
+
+B<2.4>  Added support for using RRDs.  Calculate altimeter setting from station pressure and use this as barometer.  Added tracking of Sea Level Pressure reading provided directly from the console.  Changed CWOP packet upload to every 10 minutes, user can choose 0-9 for the final digit of the minute to send.  Weatherunderground uploads are now done by listing the minutes you wish to have an upload occur.  Added support for excluding sensor readings from updates sent to WU and CWOP as well as the recording of those readings in the RRDs.  
+
+B<2.4.1> Some minor bigfixes in the CWOP submission code.  Added bar_offset variable.
+
+B<2.4.2> Bugfix for division by 0 error in average wind speed calculation.  Apparently this was caused by not actually closing the stack file in the stack_dump routine.  Also corrected value in division statement to compensate for the array counting from 0 instead of 1.  No longer require LWP module unless W.U. submissions are enabled.  Added some logging to the stack dump and load_value routines.  Added -s option for sending sea level pressure to WU instead of altimeter.  Added backoff sleep routine that will cause the daemon to exit if too many out of range values are encountered.  This way if the daemon loses contact with the console because of a hardware issue or other abnormality such as two instances trying to run at the same time, it will exit instead of filling the log file or worse yet an entire disk/partition with errors.  Added logic to prevent WU rapid fire updates at less than 2.5 second intervals.  Added logic to ensure loop ratio can be kept > 1.  
+
+B<2.5> Bugfixes and tweaks in barometer reading routine and division by 0 error if humidity is ever reported as 0.  Logging tweaks in the CWOP sending section.  Also some improved logic for catching a condition where the daemon and console get out of sync causing the daemon to continiously think it is receiving bad data.  
+
+Now for some PAUSE stuff.
+
+=head1 README
+
+This daemon is written to communicate with a Davis Vantage Pro Weather Staion.
+
+It will store the daily extreme values and their time of occurance in a database and update the weather underground and/or APRSWXNET/CWOP at a user configurable interval between once per hour and once per minute, or you can disable this feature altogether.   
+
+It will generate 3 comma seperated text files and 5 RRDs as it runs.  These files are intended for use by other scripts.
+
+It has the ability to call an external script in response to a user set weather alarm either on the station console or within the conf file settings.
+
+Example of installation:
+
+   cp vanprod-$VERSION /usr/local/sbin/vanprod
+   cp vanprod.conf-$VERSION /etc/vanprod.conf
+   pod2man /usr/local/sbin/vanprod /usr/local/man/man1/vanprod.1
+
+Create a script to start the daemon for you at boot.  Modify the vanprod.conf file to suit your preferences and needs.
+
+B<UPGRADING FROM PREVIOUS VERSIONS>
+
+B<To upgrade from a 0.x or 1.0 version:>  Beginning with version 1.1, you will need to modify the database table if you have been using that feature in any of the 0.x or 1.0 versions.  You will need to add columns for the minimum and maximum indoor temperature, humidity, and dewpoint as well as the time of occurance for each.  See the section on the database setup for additional details.  
+
+B<Upgrading from 1.x to 2.0:>  In addition to the steps above, (if applicable) you will need to obtain the vanprod.conf file along with the daemon itself and modify the settings in that file to suit your needs.  You may need to modify your database table from int(3) to char(3) for the wind chill and heat index values.
+
+B<Upgrading from 2.0 to 2.2> In addition to the steps above, you will need to modify your database table since max_uv, max_uv_time, max_srad, and max_srad_time have been added.  A side effect of forcing the barometer to update once per minute required the entire timing of data retrival loop to be slowed.  The daemon will now run at about half the speed of previous versions.  Be sure to change your loop ratio when you begin using 2.2 and have the daemon calculate a new ratio for you.  I recommend that you double your current loop ratio as a starting point.  
+
+B<Upgrading from 2.2 to 2.3>  You will need to update your vanprod.conf file to include first.aprs.net, second.aprs.net, and third.aprs.net instead of the previously supported tier2 servers.  The tier 2 server ops abruptly decided to pull out from the the APRSWXNET/CWOP network apparently to prove a point following a discussion on the CWOP weather quality mailing list.  It is not necessary to use rotate.aprs.net since the software will automatically fail over to the next server should one of them not respond in an appropiate manner.
+
+B<Upgrading from 2.3 to 2.4.x>  Support for RRDs has been added.  You will need a suitable installation of rrdtool or run with the -r option.  A new variable $slp for Sea Level Pressure has been added.  This is what is provided by the console when your elevation is set to < > 0.  The daemon now calculates the altimeter setting from the station pressure and uses that value as the barometer value.  While this is not meterologically correct, it is in keeping with common practices to use the two interchangeably.  This will require you to have your elevation set correctly in the console.  You should remove num_updates from your vanprod.conf file and add update_wu_min, update_cwop_min and sensor_exclude.  See above for details on these variables.
+
+=head1 PREREQUISITES
+
+The daemon requires the following at a minimum in order to run:
+
+Device::Davis
+Getopt::Std
+Sys::Syslog
+POSIX
+Date::Calc
+Date::Manip
+Socket
+
+=head1 COREQUISITES
+
+C<DBI> for database updates.
+C<LWP> for Weather Underground.
+rrdtool
+
+=pod OSNAMES
+
+any Unix / Linux variant or Mac (only tested with OS X)
+
+=pod SCRIPT CATEGORIES
+
+Networking
+Web
+
+=head1 SEE ALSO
+
+perl(1) perlfunc(1) Device::Davis(3) POSIX(3) LWP(3) DBI(3) Date::Manip(1) Date::Calc(3) Getopt::Std(3) Sys::Syslog(3) syslog.conf(5) http://www.mysql.com/doc/ http://www.rrdtool.org
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright 2004 - 2010 by Stan Sander, N5KJT.  stsander@sblan.net  You are welcome to send me any requests for new features or enhancements, and of course bug reports.  If you like the software and would like to support my development efforts, please consider a donation via paypal.  Even if you are unable or decide not to donate, you are welcome to use the software.  Donations are not required as part of the license.  Vanprod is free software.  You may redistribute it and/or modify it under the terms of the Perl Artistic License available at http://dev.perl.org/licenses/artistic.html  
+
+THIS PACKAGE IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+
+=cut

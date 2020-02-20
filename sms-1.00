@@ -1,0 +1,447 @@
+#!/usr/bin/perl
+
+use strict;
+use Tk;
+use Tk::Frame;
+use Tk::Label;
+use Tk::Dialog;
+use Tk::Toplevel;
+use Net::SMS::Genie;
+use Getopt::Std;
+use vars qw($Registry);
+use v5.6.1;
+
+our $VERSION = '1.00';
+
+my ($name, $phone, %phone, $dirty, %opt, $PHONE, $user, $FromName);
+my ($user, $passwd, $from, $to, $msg);
+
+getopts('p:v', \%opt);
+
+if (defined($opt{'d'}))
+{
+  $PHONE = $opt{'d'};
+}
+else
+{
+  if ($^O =~ /win/i)
+  {
+    require Win32::TieRegistry;
+    import Win32::TieRegistry;
+    $Registry->Delimiter("/");
+    if (defined($Registry->{"LMachine/Network/Logon//username"}))
+    {
+      $user = $Registry->{"LMachine/Network/Logon//username"};
+    }
+    else
+    {
+      $user = "unknown";
+    }
+    $ENV{HOME} = "C:\\My Documents\\$user";
+    $PHONE = "$ENV{HOME}\\phone";
+    mkdir $ENV{HOME} unless (-d $ENV{HOME});
+  }
+  else
+  {
+    $PHONE = "$ENV{HOME}/.phone";
+  }
+}
+
+if (open(PHONE, $PHONE))
+{
+  while (<PHONE>)
+  {
+    chomp;
+    ($phone, $name) = /\s*(\S+)\s+(.*)/;
+    if ($phone =~ /fromname/i)
+    {
+      $from = $name; $FromName = $from;
+    }
+    else
+    {
+      $phone{$name} = $phone;
+    }
+  }
+  close(PHONE);
+}
+
+my $mw = MainWindow->new();
+$mw->configure(-title=>'SMS');
+
+my $f0 = $mw->Frame;
+
+my $f1 = $f0->Frame;
+my $l1 = $f1->Label(-text=>'Genie Username: ', -anchor=>'e',
+		    -width=>16)->pack(-side=>'left');
+my $e1 = $f1->Entry(-textvariable=>\$user)->pack(-side=>'right');
+$f1->pack(-side=>'top');
+
+my $f2 = $f0->Frame;
+my $l2 = $f2->Label(-text=>'Genie Password: ', -anchor=>'e',
+		    -width=>16)->pack(-side=>'left');
+my $e2 = $f2->Entry(-textvariable=>\$passwd, -show=>'*')->pack(-side=>'right');
+$f2->pack(-side=>'top');
+
+my $f3 = $f0->Frame;
+my $l3 = $f3->Label(-text=>'From: ', -anchor=>'e',
+		    -width=>16)->pack(-side=>'left');
+my $e3 = $f3->Entry(-textvariable=>\$from)->pack(-side=>'right');
+$f3->pack(-side=>'top');
+
+my $f5 = $f0->Frame;
+my $l5 = $f5->Label(-text=>'To: ', -anchor=>'e',
+		    -width=>16)->pack(-side=>'left');
+my $e5 = $f5->Entry(-textvariable=>\$to)->pack(-side=>'right');
+$f5->pack(-side=>'top');
+
+my $f8 = $f0->Frame;
+my $b1 = $f8->Button(-text=>'Phone Book', -command=>\&phone_book);
+$b1->pack(-side=>'left');
+my $b2 = $f8->Button(-text=>'Send', -command=>\&send_sms);
+$b2->pack(-side=>'left');
+my $b3 = $f8->Button(-text=>'Quit', -command=>\&quit);
+$b3->pack(-side=>'right');
+$f8->pack(-side=>'top');
+
+$f0->pack(-side=>'left', -padx=>2);
+
+my $f4 = $mw->Frame;
+my $l4 = $f4->Label(-text=>'Message (max 123 chars):')->pack(-side=>'top');
+my $e4 = $f4->Text(-width=>40, -height=>6, -wrap=>'word');
+$e4->pack(-side=>'bottom');
+$f4->pack(-side=>'right', -padx=>2);
+
+$e1->focus;
+
+MainLoop;
+
+sub quit
+{
+  &save_phonebook;
+  $mw->destroy;
+}
+
+sub save_phonebook
+{
+  my ($name);
+
+  
+  return unless ($dirty || $FromName ne $from);   # only save if changed
+  if (open(PHONE, ">$PHONE"))
+  {
+    printf PHONE "FromName        %s\n", $from;
+    foreach $name (sort keys %phone)
+    {
+      $phone{$name} =~ s/\s//g; # just in case...
+      printf PHONE "%-15s %s\n", $phone{$name}, $name;
+    }
+    close(PHONE);
+    $dirty = 0;
+  }
+}
+
+sub send_sms
+{
+  my $cursor = $mw->cget(-cursor);
+  $mw->configure(-cursor=>'watch');
+  $mw->update();
+  my $msg = substr $e4->get('1.0', 'end'), 0, (117 - length($from));
+  chomp($msg);
+  $to =~ s/\s//g;
+  my $sms = Net::SMS::Genie->new(username=>$user, password=>$passwd,
+				 recipient=>$to, subject=>"From: $from",
+				 message=>$msg);
+  $sms->verbose(1) if (defined($opt{'v'}));
+  $sms->send();
+  $mw->Dialog(-title=>'Message Sent',
+	      -text=>"Message sent to $to:\n$msg",
+	      -bitmap=>'info',
+	      -buttons=>['OK'])->Show();
+  $mw->configure(-cursor=>$cursor);
+}
+
+sub phone_book
+{
+  my ($name, $ent);
+
+  my $pb = $mw->Toplevel(-title=>'Phone Book');
+  $pb->minsize(300,200);
+  my $pbf0 = $pb->Frame;
+  my $pbf1 = $pbf0->Frame;
+  my $pbl0 = $pbf1->Scrolled("Listbox", -scrollbars=>'oe',
+			    -width=>40, -selectmode=>'single');
+  foreach $name (sort keys %phone)
+  {
+    $ent = sprintf("%-15s %s", $phone{$name}, $name);
+    $pbl0->insert('end', $ent);
+  }
+  $pbl0->pack(-side=>'left', -fill=>'both', -expand=>1);
+  $pbf1->pack(-fill=>'both', -expand=>1);;
+  my $pbf8 = $pbf0->Frame;
+  my $pbb0 = $pbf8->Button(-text=>'Close',
+			   -command=>sub { &save_phonebook; $pb->destroy;});
+  $pbb0->pack(-side=>'left');
+  my $pbb1 = $pbf8->Button(-text=>'Select',
+			   -command=>[ \&select_num, $pbl0]);
+  $pbb1->pack(-side=>'left');
+  my $pbb2 = $pbf8->Button(-text=>'New',
+			   -command=>[ \&new_phone, $pbl0]);
+  $pbb2->pack(-side=>'left');
+  my $pbb3 = $pbf8->Button(-text=>'Edit',
+			   -command=>[ \&edit_phone, $pbl0]);
+  $pbb3->pack(-side=>'left');
+  my $pbb4 = $pbf8->Button(-text=>'Delete',
+			   -command=>[ \&remove_active, $pbl0]);
+  $pbb4->pack(-side=>'left');
+  $pbf8->pack(-side=>'bottom');
+  $pbf0->pack(-fill=>'both', -expand=>1);
+}
+
+sub select_num
+{
+  my($pbl) = @_;
+  return unless (defined($pbl->curselection));
+  my($num) = $pbl->get('active');
+
+  $num =~ s/\s*([0-9]+).*/$1/;
+  $e5->delete(0, 'end');
+  $e5->insert(0, $num);
+}
+
+sub new_phone
+{
+  my($pbl) = @_;
+  my($nuser, $nphone);
+
+  my $n = $mw->Toplevel(-title=>'New Phone Number');
+  my $nf0 = $n->Frame;
+  my $nf1 = $nf0->Frame;
+  my $nl1 = $nf1->Label(-text=>'Name:  ')->pack(-side=>'left');
+  my $ne1 = $nf1->Entry(-textvariable=>\$nuser)->pack(-side=>'right');
+  $nf1->pack(-side=>'top');
+  my $nf2 = $nf0->Frame;
+  my $nl1 = $nf2->Label(-text=>'Phone: ')->pack(-side=>'left');
+  my $ne2 = $nf2->Entry(-textvariable=>\$nphone)->pack(-side=>'right');
+  $nf2->pack(-side=>'top');
+  my $nf3 = $nf0->Frame;
+  my $nb0 = $nf3->Button(-text=>'Close',
+			 -command=> sub { $n->destroy; })->pack(-side=>'left');
+  my $nb1 = $nf3->Button(-text=>'Add',
+			 -command=>[ \&add_phone, \$nuser, \$nphone,
+				     $pbl, $ne1, $ne2]);
+  $nb1->pack(-side=>'right');
+  $nf3->pack(-side=>'top');
+  $nf0->pack;
+  $ne1->focus;
+}
+
+sub edit_phone
+{
+  my($pbl) = @_;
+  my($nuser, $nphone, $ent, $old_user, $idx);
+
+  return unless (defined($pbl->curselection));
+  $ent = $pbl->get('active');
+  ($nphone, $nuser) = $ent =~ /\s*(\S+)\s+(.*)/;
+  $old_user = $nuser;
+  $idx = $pbl->curselection;
+  my $n = $mw->Toplevel(-title=>'Edit Phone Number');
+  my $nf0 = $n->Frame;
+  my $nf1 = $nf0->Frame;
+  my $nl1 = $nf1->Label(-text=>'Name:  ')->pack(-side=>'left');
+  my $ne1 = $nf1->Entry(-textvariable=>\$nuser)->pack(-side=>'right');
+  $nf1->pack(-side=>'top');
+  my $nf2 = $nf0->Frame;
+  my $nl1 = $nf2->Label(-text=>'Phone: ')->pack(-side=>'left');
+  my $ne2 = $nf2->Entry(-textvariable=>\$nphone)->pack(-side=>'right');
+  $nf2->pack(-side=>'top');
+  my $nf3 = $nf0->Frame;
+  my $nb0 = $nf3->Button(-text=>'Close',
+			 -command=> sub { $n->destroy; })->pack(-side=>'left');
+  my $nb1 = $nf3->Button(-text=>'Update',
+			 -command=>[ \&change_phone, \$nuser, \$nphone,
+				     $pbl, $n, $old_user, $idx]);
+  $nb1->pack(-side=>'right');
+  $nf3->pack(-side=>'top');
+  $nf0->pack;
+  $ne1->focus;
+}
+
+sub add_phone
+{
+  my($user, $phone, $pbl, $e1, $e2) = @_;
+
+  $$phone =~ s/\s//g;
+  $phone{$$user} = $$phone;
+  $dirty = 1;
+  my $ent = sprintf("%-15s %s", $$phone, $$user);
+  $pbl->insert('end', $ent);
+  $pbl->see('end');
+  $e2->delete(0, 'end');
+  $e1->delete(0, 'end');
+  $e1->focus;
+}
+
+sub change_phone
+{
+  my($user, $phone, $pbl, $n, $old, $idx) = @_;
+
+  delete($phone{$old});
+  $$phone =~ s/\s//g;
+  $phone{$$user} = $$phone;
+  $dirty = 1;
+  my $ent = sprintf("%-15s %s", $$phone, $$user);
+  $pbl->delete($idx);
+  $pbl->insert($idx, $ent);
+  $n->destroy;
+}
+
+sub remove_active
+{
+  my($pbl) = @_;
+  my($name);
+
+  return unless (defined($pbl->curselection));
+  my $ent = $pbl->get('active');
+  ($name) = $ent =~ /\s*\S+\s+(.*)/;
+  delete($phone{$name});
+  $pbl->delete('active');
+}
+
+__END__
+
+=head1 NAME
+
+sms - graphical tool for sending SMS messages via Genie
+
+=head1 SYNOPSIS
+
+  sms [ -v ] [ -p phonebook ]
+
+=head1 DESCRIPTION
+
+The SMS Tool provides a graphical interface to the Net::SMS::Genie
+module using the Tk toolkit.  You will need an account on the Genie
+website (http://www.genie.co.uk/) to successfully send SMS messages
+(registration is free - you must "validate" your mobile number when
+you register which will send you an SMS message with a validation
+string which you need to enter at the web site to enable SMS sending).
+
+The initial window requires you to enter your Genie username and
+password to enable access to your Genie account.  You are also asked
+to specify who the message is from.  This is because the received
+message will appear to be from "genie.co.uk" rather than your mobile
+number and, although the messages you send will contain your mobile
+number, it will not be matched to your name, so this from field helps
+people recognise who sent the message.  The value will be stored in
+your phonebook and set automatically next time.
+
+Enter the message you wish to send and the phone number you wish to
+send it to (without any spaces, though these will be stripped).  You
+can also select a number from your phone book.
+
+The phone book window allows you to add, edit, delete and select phone
+numbers.  Numbers selected get copied to the "to" field in the main
+SMS window.  Spaces will be stripped from phone numbers for
+compatability with the Genie service.
+
+Clicking on the "Send" button will send the message.  Once the message
+has been sent to Genie, you will get a confirmation popup (though this
+is not a confirmation that the message has been successfully sent to
+the recipient!).
+
+=head1 OPTIONS
+
+=over 4
+
+=item -v
+
+Select verbose mode - displays the HTTP protocol sessions involved to
+send messages.
+
+=item -p phonebook
+
+Specify an alternate location for your phonebook.
+
+=back
+
+=head1 FILES
+
+=over 4
+
+=item C<$HOME/.phone>
+
+Location of default phonebook on UNIX-like systems.
+
+=item C<C:\My Documents\[user name]\phone>
+
+Location of default phonebook on Windows-like systems.
+
+=back
+
+The phone book contains one entry per line each consisting of a
+keyword and value separated by white space.  The keyword is either
+"FromName" in which case the value is used in the "from" field of the
+GUI, or it is a phone number and the value is the name associated with
+that value.
+
+=head1 README
+
+This is a Perl/Tk tool for sending SMS messages.  The application uses the SMS
+gateway at www.genie.co.uk to do the sending.  This is achieved using the
+Net::SMS::Genie module.
+
+This application has been tested under Solaris, Linux and Windows98 (running
+the binary distribution of SiePerl available from CPAN).  It should run
+un-edited on any UNIX platform with Perl and the required modules installed.
+It should likewise run on other Windows platforms.  If there are any anomolies
+or changes required to get this running on a particular platform, please let
+me know.  Also, if anyone has any better suggestions about how to determine a
+useful home directory under Windows variants, please get in touch - at the
+moment I use the login name which gets passed into the networking subsystem
+via the registry (eek!).
+
+Copyright (C) 2001 Mark Bush
+
+=head1 PREREQUISITES
+
+This script requires the C<Net::SMS::Genie> module (which requires the
+C<CGI_Lite> module, though a bug appears in the standard version so
+you may want to pick up the one at
+http://bushnet.demon.co.uk/software/SMS/CGI_Lite.pm).  The C<Tk>
+module is also required for the GUI.
+
+=head1 OSNAMES
+
+solaris
+linux
+MSWin32
+
+=head1 SCRIPT CATEGORIES
+
+Networking
+Web
+Win32
+
+=head1 COPYRIGHT AND AUTHOR
+
+This application is free software.  This code is distributed in the hope that
+it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  You may freely use,
+copy and distribute this software as long as all copyright notices, including
+this notice, remain intact and that you do not try to claim it as your own or
+try to sell it.  You may alter the code as long as you send me any diffs (this
+will ensure that you have an easier time of it when you upgrade ;).
+
+Copyright (C) Mark Bush 2001, E<lt>Mark.Bush@bushnet.demon.co.ukE<gt>
+
+=head1 LATEST RELEASE
+
+The latest version of this software including user guide is available
+at http://bushnet.demon.co.uk/software/SMS/
+
+=head1 SEE ALSO
+
+L<perl>, L<Net::SMS::Genie>, the Genie website (http://www.genie.co.uk/).
+
+=cut

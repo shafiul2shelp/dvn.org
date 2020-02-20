@@ -1,0 +1,808 @@
+#!/usr/bin/perl -w
+
+######################################################################
+#
+#  check_ftp
+#
+#  This script connects to the FTP server and compares the last
+#  modification time of all or part of the files in a remote
+#  directory. It sends a message to the standard output or by email
+#  when it finds new files since the last time it checked.
+#
+#  Copyright (c) 2002, Javier Herrero. All Rights Reserved.
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the same terms as Perl itself.
+#
+######################################################################
+
+use strict;
+use Net::FTP;
+use Mail::Send;
+
+my $VERSION = 1.02;
+
+######################################################################
+## CONFIGURATION VARIABLES (default values)
+######################################################################
+my $WORKING_DIR = $ENV{HOME}."/.check_ftp";
+my $VERBOSE = 0;
+######################################################################
+
+my $use =
+	"check_ftp [add|remove] [-dir=WORKING_DIR] [-v=VERBOSE]\n".
+	"  commands:\n".
+	"    add:        add a new site to the list of monitored sites\n".
+	"    remove:     remove a site from the list of monitored sites\n".
+	"    <default>:  check for new files in configured sites\n".
+	"  options:\n".
+	"    -dir=WORKING_DIR:  changes the default working directory. By\n".
+	"                       default the system uses [HOME]/.check_ftp\n".
+	"    -dir=VERBOSE:      verbosity level (0, 1 or 2)\n".
+	"\n";
+
+my $mode = "";
+# Read arguments
+foreach my $arg (@ARGV) {
+	if ($arg =~ /^\-dir=(.+)/) {
+		$WORKING_DIR = $1;
+	} elsif ($arg =~ /^\-v=(\d)/) {
+		$VERBOSE = $1;
+	} elsif (!$mode) {
+		if ($arg =~ /^add$/i) {
+			$mode = 'add';
+		} elsif ($arg =~ /^remove$/i) {
+			$mode = 'remove';
+		} else {
+			die $use;
+		}
+	} else {
+		die $use;
+	}
+}
+
+if ($mode eq 'add') {
+	&add_a_site_into_config_file($WORKING_DIR);
+} elsif ($mode eq 'remove') {
+	&remove_a_site_from_config_file($WORKING_DIR);
+} else {
+	$| = 1;
+	print "CHECK_FTP: start\n" if ($VERBOSE);
+
+	my $site = &read_configuration($WORKING_DIR);
+	&check_ftp_sites($site);
+	print "CHECK_FTP: end\n" if ($VERBOSE);
+}
+
+######################################################################
+##  CHECK FTP SITES
+######################################################################
+sub check_ftp_sites {
+	my ($site) = @_;
+
+	foreach my $site_name (keys %$site) {
+		print "CHECK_FTP: checking $site_name... " if ($VERBOSE);
+		&print_site($site_name, $site->{$site_name}) if ($VERBOSE>1);
+
+		# Get the last time checked list of files in remote directory
+		my $last = &read_last_file($site_name);
+
+		# Check configuration and set default for undefined parameters
+		my $host      = $site->{$site_name}->{HOST};
+		if (!$host) {
+			print "No host defined for $site_name\n";
+			next;
+		}
+		my $login     = ($site->{$site_name}->{USER} || 'anonymous');
+		my $mail      = ($site->{$site_name}->{MAIL} || '');
+		my $password  = ($site->{$site_name}->{PASSWORD} || $mail);
+		my $dir       = ($site->{$site_name}->{DIRECTORY} || "");
+		my $port      = ($site->{$site_name}->{PORT} || '21');
+		my $files;
+		foreach my $file (@{$site->{$site_name}->{FILES}}) {
+			$files->{$file} = 1;
+		}
+
+		# Get current list of files in remote directory
+		my $ls = &get_list_of_files_in_server($host, $port, $login,
+				$password, $dir);
+		next if (!$ls);
+
+		# Compare current and the last time checked list of files in remote dir.
+		my @new_files = &get_list_of_new_files($site_name, $ls, $last, $files);
+
+		# Warn about new files
+		my $message;
+		if (@new_files) {
+			if ($mail) {
+				my $msg = new Mail::Send;
+				$msg->to($mail);
+				$msg->subject("$site_name has new files");
+				my $mail_handle = $msg->open();
+				print $mail_handle
+					"This is an automatic message from FTP Checker",
+						" System\n",
+					"\n",
+					"The system has found new files for $site_name:\n",
+					"\n",
+					"New files are available at: ftp://$host:$port/$dir\n",
+					"\n",
+					"LIST OF NEW FILES:\n",
+					"  ", join("\n  ", @new_files),"\n",
+					"\n",
+					"Please remember to download them.\n",
+					"\n";
+				$mail_handle->close()
+			} else {
+				$message =
+					"\n==========================\n".
+					" New files are available at: ftp://$host:$port/$dir\n".
+					"\n".
+					" LIST OF NEW FILES:\n".
+					"   ". join("\n   ", @new_files). "\n".
+					"\n".
+					" Please remember to download them.\n".
+					"==========================\n".
+					"\n";
+			}
+		}
+		print "OK\n" if ($VERBOSE);
+		print $message if ($message);
+	}
+}
+
+######################################################################
+##  READ CONFIGURATION
+######################################################################
+sub read_configuration {
+	my ($dir) = @_;
+
+	# Check the conf. directory and the conf. file exist
+	(-d "$dir") || die ("Cannot find directory \"$dir\"\n");
+	(-e "$dir/.conf") || die ("Cannot find configuration file".
+			" \"$dir/.conf\"\n");
+
+	(open CONF, "$dir/.conf") || die ("Cannot open configuration file".
+			" \"$dir/.conf\"\n");
+
+	print "CHECK_FTP: configuration seems to be OK\n" if ($VERBOSE);
+	print "CHECK_FTP: reading configuration file... " if ($VERBOSE);
+
+	my $site; # Hash with the configuration of all the FTP sites
+	my $label; # Current FTP site
+	while (<CONF>) {
+		($label) = $1 if ($_ =~ /^<SITE (\w[^>]*)>/);
+		if ($label) {
+			$site->{$label}->{HOST}      = $1 if ($_ =~ /HOST\s*=\s*(.+)/);
+			$site->{$label}->{PORT}      = $1 if ($_ =~ /PORT\s*=\s*(.+)/);
+			$site->{$label}->{USER}      = $1 if ($_ =~ /USER\s*=\s*(.+)/);
+			$site->{$label}->{PASSWORD}  = $1 if ($_ =~ /PASSWORD\s*=\s*(.+)/);
+			$site->{$label}->{DIRECTORY} = $1 if ($_ =~ /DIRECTORY\s*=\s*(.+)/);
+			$site->{$label}->{MAIL}      = $1 if ($_ =~ /MAIL\s*=\s*(.+)/);
+			if ($_ =~ /FILE = (.+)/) {
+				my $file     = $1;
+				push(@{$site->{$label}->{FILES}}, $file);
+			}
+		}
+		if (($_ =~ /^<\/SITE>/) && defined($label)) {
+			$label = undef;
+		}
+	}
+	close CONF;
+	print "OK\n" if ($VERBOSE);
+
+	return $site;
+}
+
+######################################################################
+##  GET LIST OF FILES IN SERVER
+######################################################################
+sub get_list_of_files_in_server {
+	my ($host, $port, $login, $password, $dir) = @_;
+
+	# Connect to FTP host
+	my $ftp = Net::FTP->new($host, Debug=>0, Port=>$port);
+	if (!$ftp) {
+		print "Unable to connect to $host\n";
+		return undef;
+	}
+
+	# Login into FTP server
+	if (!$ftp->login($login, $password)) {
+		print "Unable to login as $login\@$host\n";
+		return undef;
+	}
+
+	# Change to monitored directory
+	if ($dir) {
+		if (!$ftp->cwd($dir)) {
+			print "Unable to chdir to ftp://$host/$dir\n";
+			return undef;
+		}
+	} else {
+		$dir = $ftp->pwd();
+		$dir =~ s/^\///;
+	}
+
+	# Get list of files
+	my $ls;
+	@{$ls} = $ftp->dir();
+	if (!@{$ls}) {
+		print "Unable to list files in ftp://$host/$dir\n";
+		return undef;
+	}
+	$ftp->quit;
+
+	return $ls;
+}
+
+######################################################################
+##  GET LIST OF NEW FILES
+######################################################################
+sub get_list_of_new_files {
+	my ($site_name, $ls, $last, $files) = @_;
+	# $site_name: label id for this FTP site
+	# $ls:        list of current files in monitored dir.
+	# $last:      list of files found the last time
+	# $files:     restrict comaprison to this list of files. If this is
+	#             null, all the files in hte directory are checked.
+
+	my @new_files;
+	foreach my $ls_line (@{$ls}) {
+		if ($ls_line =~ / ([^ ]+)$/) {
+			$ls_line =~ s/[\r\n]+$//;
+			my $file = $1;
+			if (!$files || (defined($file) && defined($files->{$file}))) {
+				if (!defined($last->{$ls_line})) {
+					push(@new_files, $file);
+					&save_record($site_name, $ls_line) ||
+						print "Error while recording last $file\n";
+				}
+			}
+		}
+	}
+	return @new_files
+}
+
+######################################################################
+## READ LAST FILE
+######################################################################
+sub read_last_file {
+	my ($site_name) = @_;
+	my $return;
+	if (open(LAST, "$WORKING_DIR/$site_name")) {
+		while(<LAST>) {
+			s/[\r\n]+$//;
+			$return->{$_} = 1;
+		}
+		close LAST;
+	}
+
+	return $return;
+}
+
+######################################################################
+##  SAVE RECORD
+######################################################################
+sub save_record {
+	my $site_name = shift;
+	my $line = shift;
+	my @lines;
+
+	$line =~ s/[\r\n]+$//;
+	$line =~ / ([^ ]+)$/;
+	my $file = $1;
+
+	if (! -e "$WORKING_DIR/$site_name") {
+		open(LAST, ">$WORKING_DIR/$site_name");
+		close(LAST);
+	}
+
+	if (open(LAST, "$WORKING_DIR/$site_name")) {
+		while (<LAST>) {
+			$_ =~ s/[\r\n]*$//;
+			$_ =~ / ([^ ]+)$/;
+			my $old_file = $1;
+			@lines = (@lines, $_) if ($old_file ne $file);
+		}
+		close LAST;
+	} else {
+		return 0;
+	}
+
+	if (open(LAST, ">$WORKING_DIR/$site_name")) {
+		foreach my $last (@lines) {
+			$last =~ s/[\r\n]*$/\n/;
+			print LAST $last;
+		}
+		$line =~ s/[\r\n]*$/\n/;
+		print LAST $line;
+		close LAST;
+		return 1;
+	}
+	return 0;
+}
+
+######################################################################
+##  PRINT SITE
+######################################################################
+sub print_site {
+	my ($site_name, $this_site) = @_;
+
+	print "\n", $site_name, "\n\n";
+	foreach my $key (keys %{$this_site}) {
+		if ($key eq "FILES") {
+			print " FILES = ",
+				join("\n         ", @{$this_site->{FILES}}), "\n";
+		} elsif ($key eq "PASSWORD") {
+			$this_site->{$key} =~ s/./*/g;
+			print " $key = ", $this_site->{$key}, "\n";
+		} else {
+			print " $key = ", $this_site->{$key}, "\n";
+		}
+	}
+	print "\n";
+}
+
+######################################################################
+##  ADD A SITE INTO CONFIG FILE
+######################################################################
+sub add_a_site_into_config_file {
+	my ($dir) = @_;
+
+	# Create dir with read access to owner only if it does not already exist.
+	if (!(-d $dir)) {
+		mkdir $dir, 0700;
+		if (!(-d $dir)) {
+			die "Cannot create directory <$dir>\n";
+		}
+	}
+
+	my $sites;
+	if (-e "$dir/.conf") {
+		# Show list of site available in configuration file
+		if (!(-w "$dir/.conf")) {
+			die "Cannot write on <$dir/.conf>\n";
+		}
+		my $global_verbose = $VERBOSE;
+		$VERBOSE = 0;
+		$sites = &read_configuration($dir);
+		$VERBOSE = $global_verbose;
+		if ($sites) {
+			print "Here is the list of monitored sites.\n",
+				"   - ", join("\n   - ", sort keys %$sites), "\n";
+			print "\nDo not use the same site name more than once!\n\n";
+		}
+	} else {
+		# Create default header of configuration file
+		(open CONF, ">$dir/.conf") || die ("Cannot write on <$dir/.conf>\n");
+		print CONF q{
+#
+#  Configuration file for FTP Checker System (check_ftp)
+#
+#  You can customize the system for each site or group of file
+# you want to monitor.
+#
+#  Each site must begin with the tag: <SITE name_of_the_site> at
+# the beginning of the line and end with the closing tag </SITE>
+# also at the beginning of the line.
+#
+# Between both tags, you have to set several variables:
+#  HOST = ftp.server.com     FTP server
+#  PORT = 21                 The port number to connect to on the FTP Server
+#  USER = anonymous          login name for the FTP server
+#  PASSWORD = *******        password for the account in the FTP server
+#  DIRECTORY = pub           directory you want to monitor
+#  MAIL = your@here.org      email address to send messages
+#  FILE = file1.txt          you can restrict monitoring to ONLY some files
+#  FILE = file2.txt            of the remote directory. If you don't specify at
+#  FILE = file3.txt            least one file, the entire directory is monitored
+#
+# This progrma was developped between September 14 and October 10, 2001
+#   in the Spanish National Cancer Center (CNIO)
+#   by Javier Herrero (jherrero@cnio.es)
+#
+
+WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+WARNING                                                                 WARNING
+WARNING          Do not use the same site name more than once!          WARNING
+WARNING                                                                 WARNING
+WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+};
+		close(CONF);
+	}
+
+	# Ask for parameters
+	my $site_name = &get_answer_from_stdin("Enter the name of the new site: ");
+	while (defined($sites) && defined($sites->{$site_name})) {
+		print "ERROR! The name must be unique.\n";
+		$site_name = &get_answer_from_stdin("Enter the name of the new site: ");
+	}
+	while ($site_name !~ /\w/) {
+		print "ERROR! The name must begin with a letter.\n";
+		$site_name = &get_answer_from_stdin("Enter the name of the new site: ");
+	}
+
+	my $hostname = &get_answer_from_stdin("Enter the name of the host: ");
+	while ($hostname eq "") {
+		print "ERROR! You must enter the name or the IP address of the host.\n";
+		$hostname = &get_answer_from_stdin("Enter the name of the host: ");
+	}
+
+	my $portnumber = &get_answer_from_stdin("Enter the port number: [21] ");
+	while ($portnumber !~ /^\d*$/) {
+		print "ERROR! You must enter a valid number ($portnumber).\n";
+		$portnumber = &get_answer_from_stdin("Enter the port number: [21] ");
+	}
+
+	print "You can get the messages about new files by email\n",
+		" or through the standard output.\n";
+	my $email = &get_answer_from_stdin(
+			"Enter the email address where sending messages: [stdout] ");
+
+	my $user = &get_answer_from_stdin(
+			"Enter the user name for logging into FTP server: [anonymous] ");
+	$user = 'anonymous' if ($user eq "");
+
+	my $password = &get_answer_from_stdin(
+			"Enter the password for logging into FTP server: [$email] ");
+	$password = $email if ($password eq "");
+
+	my $directory = &get_answer_from_stdin(
+			"Enter the directory you want to monitor: ");
+
+	my @files;
+	print "You can restrict monitoring to ONLY some files.\n",
+		" of the remote directory. By default the entire\n",
+		" directory is monitored.\n";
+	my $file = &get_answer_from_stdin(
+			"Enter the files you want to monitor: [ENTIRE DIRECTORY] ");
+	while ($file) {
+		my @file_array = split(/\s+/, $file);
+		push(@files, @file_array);
+		$file = &get_answer_from_stdin(
+			"Enter the files you want to monitor: [END OF LIST] ");
+	}
+
+	# Show configuration of the new site
+	my $this_site;
+	$this_site->{HOST}      = $hostname;
+	$this_site->{PORT} = $portnumber if ($portnumber);
+	$this_site->{MAIL} = $email if ($email);
+	$this_site->{USER} = $user if ($user);
+	$this_site->{PASSWORD} = $password if ($password);
+	$this_site->{DIRECTORY} = $directory if ($directory);
+	@{$this_site->{FILE}} = @files if (@files);
+	print "This is the configuration of the site you are about to add:\n";
+	&print_site($site_name, $this_site);
+
+	# Ask for confirmation
+	print "Are you sure you want to continue? [YES] ";
+	my $resp = <STDIN>;
+	if ($resp =~ /^n/i) {
+		print "Action cancelled.\n";
+		return;
+	}
+
+	# Add new site to the configuration file
+	print "Adding entry to list of monitored sites... " if ($VERBOSE);
+	(open CONF, ">>$dir/.conf") || die ("Cannot write on <$dir/.conf>\n");
+	print CONF "\n<SITE $site_name>\n";
+	print CONF "\tHOST = $hostname\n";
+	print CONF "\tPORT = $portnumber\n" if ($portnumber);
+	print CONF "\tMAIL = $email\n" if ($email);
+	print CONF "\tUSER = $user\n" if ($user);
+	print CONF "\tPASSWORD = $password\n" if ($password);
+	print CONF "\tDIRECTORY = $directory\n" if ($directory);
+	foreach $file (@files) {
+		print CONF "\tFILE = $file\n";
+	}
+	print CONF "</SITE>\n";
+	close CONF;
+	print "OK\n" if ($VERBOSE);
+}
+
+######################################################################
+##  REMOVE A SITE FROM CONFIG FILE
+######################################################################
+sub remove_a_site_from_config_file {
+	my ($dir) = @_;
+
+	my $global_verbose = $VERBOSE;
+	$VERBOSE = 0;
+	my $sites = &read_configuration($dir);
+	$VERBOSE = $global_verbose;
+	if (!$sites) {
+		print "There are no monitored site.\n";
+		return;
+	}
+
+	print "Here is the list of monitored sites.\n",
+		"   - ", join("\n   - ", sort keys %$sites), "\n";
+
+	# Show list of site available in configuration file
+	my $site_name = &get_answer_from_stdin(
+			"Enter the name of the site you want to remove: [CANCEL] ");
+	return if ($site_name eq "");
+
+	#Check this site exists.
+	while (!defined($sites->{$site_name})) {
+		print "ERROR! This site does not exist.\n";
+		$site_name = &get_answer_from_stdin(
+				"Enter the name of the site you want to remove: [CANCEL] ");
+		return if ($site_name eq "");
+	}
+
+	# Ask for confirmation
+	print "You are about to remove this site:";
+	&print_site($site_name, $sites->{$site_name});
+	my $resp = &get_answer_from_stdin(
+			"Are you sure you want to continue? [CANCEL] ");
+	if ($resp !~ /^y/i) {
+		print "Action cancelled.\n";
+		return;
+	}
+
+	# Remove site from configuration file
+	# 1. Read file
+	print "Removing <$site_name> from list of monitored sites... "
+			if ($VERBOSE);
+	(open CONF, "$dir/.conf") || die ("Cannot read <$dir/.conf>\n");
+	my @lines = <CONF>;
+	close(CONF);
+
+	# 2. Write all but site we want to remove
+	(open CONF, ">$dir/.conf") || die ("Cannot write on <$dir/.conf>\n");
+	my $label;
+	foreach my $line (@lines) {
+		if ($line =~ /^<SITE (\w[^>]*)>/) {
+			$label = $1;
+		}
+		next if (defined($label) && ($label eq $site_name));
+		print CONF $line;
+		if (($line =~ /^<\/SITE>/) && defined($label)) {
+			$label = undef;
+		}
+	}
+	close(CONF);
+	print "OK\n" if ($VERBOSE);
+}
+
+######################################################################
+##  GET ANSWER FROM STDIN
+######################################################################
+sub get_answer_from_stdin {
+	my ($string) = @_;
+
+	$string =~ s/[\r\n ]*$/ /;
+	print $string;
+	my $answer = <STDIN>;
+	$answer =~ s/^\s+//; # remove whitespaces at the beginning
+	$answer =~ s/\s+$//; # remove whitespaces at the end
+
+	return $answer;
+}
+
+
+######################################################################
+##  PLAIN OLD DOCUMENTATION
+######################################################################
+=head1 NAME
+
+check_ftp - Checks for new files in FTP servers
+
+=head1 SYNOPSIS
+
+B<check_ftp> [add|remove] [-dir=WORKING_DIR] [-v=VERBOSE]
+
+=head1 PREREQUISITE
+
+This script requires C<Net::FTP> and C<Mail::Send> modules.
+
+=head1 DESCRIPTION
+
+This script connects to the FTP server and compares the last modification time
+of all or part of the files in a remote directory. It sends a message to the
+standard output or by email when it finds new files since the last time it
+checked.
+
+You can monitor several B<FTP sites>. Each site is a set of the B<FTP host>, the
+B<Port number> to connect to that host, a B<username> and a B<password> for
+login, the B<remote directory> you want to monitor and the optional B<list of
+files> you want to monitor. It can also contain an B<email address> if you want
+to get messages about new files by email.
+
+The script is intended to be launched daily from L<cron|cron> but you can also
+use it from command line. It uses a configuration file
+(F<$HOME/.check_ftp/.conf> by default) you can edit manually or using B<add>
+and B<remove> commands.
+
+Each B<FTP site> must have a unique name. This name will be used as a filename
+in the working directory (F<$HOME/.check_ftp> by default). This file will
+contain the last known modification time of the files you are monitoring.
+
+=head1 COMMANDS
+
+=over 4
+
+=item add
+
+Use this command if you want to start monitoring an B<FTP site>. You will be
+prompted for all the information needed.
+
+=item remove
+
+Use this command if you want to stop monitoring an B<FTP site>
+
+=item <default>
+
+If neither of the above command are specified, the script checks the B<FTP sites>
+according to the configuration file. It will send a message for each site with
+new files. The message will be sent by email if this option has been set for
+this site.
+
+=back
+
+=head1 OPTIONS
+
+=over 4
+
+=item -dir=WORKING_DIR
+
+Use WORKING_DIR instead of F<$HOME/.check_ftp>.
+
+=item -v=VERBOSE
+
+Set the verbosity level to VERBOSE. Possible values are 0, 1 or 2.
+
+=item -h|--help
+
+Display a short help.
+
+=back
+
+=head1 ADDING AN FTP SITE
+
+This is the information you will be prompted when adding an FTP site to the
+monitoring system:
+
+=over 4
+
+=item name of the new site:
+
+A unique label for identifying this site. Example: CPAN_scripts
+
+=item name of the host:
+
+The hostname or the IP address of the FTP server. Example: ftp.cpan.org
+
+=item portnumber:
+
+The portnumber to connect to FTP server. Default: 21
+
+=item email:
+
+Send messages about new files to this address. Default: write message to
+standard output
+
+=item username:
+
+The username for login into FTP server. Default: anonymous
+
+=item password:
+
+The password for login into FTP server. THE PASSWORDS ARE SAVED AS PLAIN TEXT.
+If you use this way to setup the first FTP site, the working directory will be
+created with read access only for the effective user. Default: same as email
+
+=item directory:
+
+The directory where the files you want to monitor are located. Default: use
+remote home directory.
+
+=item files:
+
+The list of files you want to monitor. You can enter the files one by one or
+separated by a whitespace. Default: Monitor the whole directory
+
+=back
+
+
+=head1 CONFIGURATION FILE
+
+Each site must begin with the tag: <SITE name_of_the_site> at
+the beginning of the line and end with the closing tag </SITE>
+also at the beginning of the line. Each site name must be unique.
+
+Between both tags, you have to set several variables:
+
+	HOST = ftp.cpan.org     hostname of the FTP server>
+	PORT = 21               The port number to connect
+	                          to on the FTP Server
+	USER = anonymous        login name for the FTP server
+	PASSWORD = *******      password for the FTP server
+	DIRECTORY = pub         directory you want to monitor
+	MAIL = your@here.org    email address to send messages
+	FILE = file1.txt        you can restrict monitoring to
+	FILE = file2.txt          ONLY some files of the remote
+	FILE = file3.txt          directory. By default the
+	FILE = file4.txt          entire directory is monitored
+
+B<Example:>
+
+	<SITE CPAN_scripts>
+	    HOST = ftp.cpan.org
+	    MAIL = me@cpan.org
+	    USER = anonymous
+	    PASSWORD = me@cpan.org
+	    DIRECTORY = pub/mirrors/perl/CPAN/scripts
+	</SITE>
+
+
+=head1 Revision History
+
+=over 4
+
+=item v1.02
+
+Added B<add> and B<remove> commands for adding and removing FTP sites to the
+list of monitored ones.
+
+=item v1.01
+
+Added support for non-standard port number.
+
+Added option for changing working directory.
+
+Added option for changing verbosity level.
+
+=back
+
+=head1 FILES
+
+F<$HOME/.check_ftp>
+
+F<$HOME/.check_ftp/.conf>
+
+=head1 AUTHOR
+
+Javier Herrero E<lt>jherrero@cnio.esE<gt>
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright (c) 2002, Javier Herrero. All Rights Reserved.
+
+This program is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
+
+=head1 SEE ALSO
+
+L<cron|cron>, L<crontab|crontab>.
+
+See L<mywebget|mywebget> for automate periodic downloads.
+
+=begin comment
+
+=head1 README
+
+This script connects to the FTP server and compares the last modification time
+of all or part of the files in a remote directory. It sends a message to the
+standard output or by email when it finds new files since the last time it
+checked.
+
+=pod OSNAMES
+
+Unix
+
+=pod SCRIPT CATEGORIES
+
+Networking
+
+Web
+
+=end comment
+
+=cut
+
